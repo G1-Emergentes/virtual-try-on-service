@@ -87,6 +87,7 @@ Todas las rutas llevan el prefijo **`/api/v1/try-on`** (variable `API_PREFIX`). 
 | GET | `/garments/{garment_id}/model/info` | Estado: `status`, `badge`, `source_image_version`, `is_stale`, fechas, detalles. |
 | GET | `/garments/{garment_id}/model/thumbnail` | Miniatura: la foto sin fondo, PNG transparente de 512 px. Para las tarjetas. |
 | GET | `/garments/models?ids=a,b,c` | Estado, etiqueta y rutas de hasta 100 prendas en una llamada. Para la pantalla del armario. |
+| PUT | `/garments/{garment_id}/model/ar-fit` | Guarda cómo se coloca el modelo en la cara (calibración desde la app). Solo modelos `AR_READY`. |
 | GET | `/health` | `{"status": "ok"}` si está listo. Público y sin datos internos. |
 | POST | `/generate` | Técnico: foto → `.glb` con todos los parámetros del motor, sin prenda asociada. |
 | POST | `/check` | Técnico: valida una foto con Gemini (sin GPU). |
@@ -104,6 +105,28 @@ Hoy solo los **lentes** son `AR_READY`; las gorras quedan como `MODEL_3D`. Se ca
 
 Flujo sugerido en la app: el armario llama a `GET /garments/models?ids=...`, muestra la miniatura de cada prenda con su etiqueta y, al abrir el detalle, descarga el `.glb` para el visor 3D y la prueba en RA.
 
+### Colocación en la cara (`ar_fit`)
+
+Las respuestas de `POST /model`, `GET /model/info`, `PUT /model/ar-fit` y cada fila de
+`GET /models` incluyen `ar_fit` cuando el modelo es `AR_READY` (si no, `null`). La app lo
+aplica sobre el contrato del `.glb` (metros, origen en el anclaje):
+
+```json
+"ar_fit": {"anchor": "nose_bridge", "offset_m": [0.0, 0.003, 0.006], "scale": 1.0, "pitch_deg": 0.0, "source": "default"}
+```
+
+- `anchor`: punto de la cara. Lentes → `nose_bridge` (landmark 168 de MediaPipe). Lo fija la categoría.
+- `offset_m`: desplazamiento en metros en los ejes de la cara (x derecha, y arriba, z hacia fuera).
+- `scale`: factor sobre el tamaño real. `pitch_deg`: inclinación sobre el eje x.
+- `source`: `default` (valor de la categoría, variable `AR_FIT_GLASSES`) o `calibrated`.
+
+`PUT /garments/{garment_id}/model/ar-fit` con `{"offset_m": [x, y, z], "scale": 1.0, "pitch_deg": 0}`
+guarda la calibración de ese modelo (en `metadata.json`, campo `details.ar_fit`). Comprueba,
+igual que el resto, que la prenda es del usuario. Límites: ±0.03 m por eje, escala de 0.5 a 2
+e inclinación de ±30° (`400 INVALID_AR_FIT`). Una gorra u otro modelo sin RA responde
+`422 UNSUPPORTED_ACCESSORY`. **Regenerar el modelo descarta la calibración**: la geometría
+nueva puede asentar distinto.
+
 Parámetros opcionales de `POST /garments/{garment_id}/model`:
 - `category`: `glasses` o `hat`. Por defecto se deduce de la subcategoría. En modo local es obligatoria.
 - `lens_type`: `clear`, `sun_gray`, `sun_brown`, `sun_green` o `mirror`. Por defecto se mide en la foto.
@@ -114,7 +137,7 @@ Errores, con el mismo formato que el Digital Closet: `{"error": {"code", "messag
 
 | Código HTTP | `code` |
 |---|---|
-| 400 | `INVALID_GARMENT_ID`, `INVALID_PHOTO` |
+| 400 | `INVALID_GARMENT_ID`, `INVALID_PHOTO`, `INVALID_AR_FIT` |
 | 401 | `UNAUTHENTICATED` |
 | 404 | `GARMENT_NOT_FOUND`, `MODEL_NOT_FOUND` |
 | 409 | `GENERATION_IN_PROGRESS`, `MODEL_NOT_READY` |
@@ -161,11 +184,32 @@ Variables principales (`.env`):
 | `RECON_MODEL` | `spar3d` (por defecto) o `sf3d` |
 | `SPAR3D_LOW_VRAM` | `1` (necesario con 8 GB) |
 | `AR_CATEGORIES` | Categorías con etiqueta `AR_READY`. Por defecto `glasses`. |
+| `AR_FIT_GLASSES` | Ajuste en la cara por defecto de los lentes (JSON). Vacía = `{"offset_m": [0, 0.003, 0.006], "scale": 1, "pitch_deg": 0}`. Un valor fuera de límites impide arrancar. |
 | `API_PREFIX` | Prefijo de las rutas. Por defecto `/api/v1/try-on`. |
 | `DIAGNOSTICS_KEY` | Clave para `/health/details`. Vacía = desactivado. |
 | `EXPOSE_DOCS` | `true` (por defecto) muestra Swagger; `false` en producción. |
 | `PUBLIC_BASE_PATH` | Ruta con la que la app ve el servicio; se usa en `model_url` y `thumbnail_url`. Por defecto, igual a `API_PREFIX`. |
 | `GEMINI_API_KEY` | Opcional: validación de fotos en `/generate` y `/check` |
+
+## Guardar modelos en Supabase Storage
+
+El proyecto de Supabase dedicado a los modelos se llama `3D_models` y su
+URL es `https://wnzwmnifadattbburlbk.supabase.co`. Para provisionar otro
+entorno, ejecuta [la migración del bucket](supabase/migrations/20261111200000_accessory_models.sql)
+en el SQL Editor del proyecto correspondiente. El bucket privado `accessory-models`
+contiene el GLB, la miniatura, una copia de la foto de origen y los metadatos.
+
+En el `.env` de Virtual Try-On, usa la URL HTTPS del nuevo proyecto en
+`MODEL_STORAGE_URL` y su clave secreta `sb_secret_…` en
+`MODEL_STORAGE_KEY`. Configura la clave exclusivamente en el servidor.
+`DC_API_URL` sigue apuntando al API de Digital Closet, que valida la
+propiedad del accesorio y proporciona la foto original. La app descarga
+el GLB desde el API 3D con su sesión de IAM.
+
+Si Digital Closet usa Supabase local en Windows y Virtual Try-On corre en
+Docker, `DC_STORAGE_INTERNAL_URL=http://host.docker.internal:54421` permite
+resolver las URLs firmadas de las fotos del armario. Los modelos se guardan
+en el proyecto configurado en `MODEL_STORAGE_URL`.
 
 ## Probar desde PowerShell
 

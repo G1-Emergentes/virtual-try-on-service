@@ -6,6 +6,7 @@ API de modelos 3D por prenda: el modelo queda asociado al ID de la prenda del Di
     GET  /garments/{garment_id}/model/info        estado, etiqueta y datos del modelo
     GET  /garments/{garment_id}/model/thumbnail   miniatura: foto sin fondo (tarjeta)
     GET  /garments/models?ids=a,b,c               estado y etiqueta de varias prendas (armario)
+    PUT  /garments/{garment_id}/model/ar-fit      guarda cómo se coloca en la cara (calibración)
 
 Las rutas llevan el prefijo API_PREFIX (por defecto /api/v1/try-on). Las URLs que se
 devuelven (model_url, thumbnail_url) usan PUBLIC_BASE_PATH: la ruta que ve la app.
@@ -23,20 +24,39 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, File, Query, Request, UploadFile
 from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from ...application.generate_garment_model import GenerateGarmentModelCommand
 from ...application.get_garment_model import GarmentModelSummary, GarmentModelView
 from ...bootstrap import Container
-from ...domain.garment_model import AccessoryCategory, GarmentModel, ModelBadge
+from ...domain.garment_model import AccessoryCategory, ArFit, GarmentModel, ModelBadge
 from ...domain.ports import Credentials, GenerationOptions, PhotoUpload
 
 router = APIRouter(prefix="/garments", tags=["Garment Models"])
 
 
 # --- Contrato de respuesta ---------------------------------------------------------------
+
+class ArFitResponse(BaseModel):
+    """Cómo se coloca el modelo en la cara. Solo en modelos AR_READY."""
+
+    anchor: str                          # glasses -> nose_bridge (landmark 168 de MediaPipe)
+    offset_m: list[float]                # x derecha, y arriba, z hacia fuera de la cara (metros)
+    scale: float                         # sobre el tamaño real del .glb
+    pitch_deg: float                     # inclinación sobre el eje x
+    source: str                          # default | calibrated
+
+
+class ArFitRequest(BaseModel):
+    """Ajuste calibrado en la app. El anclaje lo fija la categoría del modelo."""
+
+    offset_m: list[float] = Field(..., min_length=3, max_length=3,
+                                  examples=[[0.0, 0.003, 0.006]])
+    scale: float = Field(1.0, examples=[1.0])
+    pitch_deg: float = Field(0.0, examples=[0.0])
+
 
 class GarmentModelResponse(BaseModel):
     garment_id: str
@@ -47,6 +67,7 @@ class GarmentModelResponse(BaseModel):
     is_stale: bool                       # la prenda cambió de foto: conviene regenerar
     model_url: Optional[str]             # ruta para descargar el .glb (si está READY)
     thumbnail_url: Optional[str]         # ruta de la miniatura (si existe)
+    ar_fit: Optional[ArFitResponse]      # colocación en la cara (solo AR_READY)
     job_id: Optional[str]
     error: Optional[str]
     created_at: datetime
@@ -65,6 +86,7 @@ class GarmentModelItem(BaseModel):
     is_stale: bool
     model_url: Optional[str]
     thumbnail_url: Optional[str]
+    ar_fit: Optional[ArFitResponse] = None
 
 
 class GarmentModelList(BaseModel):
@@ -88,8 +110,12 @@ def _badge(badge: Optional[ModelBadge]) -> Optional[str]:
     return badge.value if badge else None
 
 
+def _ar_fit(fit: Optional[ArFit]) -> Optional[ArFitResponse]:
+    return ArFitResponse(**fit.to_dict()) if fit else None
+
+
 def _response(links: Links, model: GarmentModel, badge: Optional[ModelBadge], is_stale: bool = False,
-              has_thumbnail: bool = False) -> GarmentModelResponse:
+              has_thumbnail: bool = False, ar_fit: Optional[ArFit] = None) -> GarmentModelResponse:
     gid = model.garment_id.value
     return GarmentModelResponse(
         garment_id=gid,
@@ -100,6 +126,7 @@ def _response(links: Links, model: GarmentModel, badge: Optional[ModelBadge], is
         is_stale=is_stale,
         model_url=links.model(gid) if model.is_ready else None,
         thumbnail_url=links.thumbnail(gid) if has_thumbnail else None,
+        ar_fit=_ar_fit(ar_fit),
         job_id=model.job_id,
         error=model.error,
         created_at=model.created_at,
@@ -119,6 +146,7 @@ def _item(links: Links, summary: GarmentModelSummary) -> GarmentModelItem:
         is_stale=summary.is_stale,
         model_url=links.model(summary.garment_id) if model and model.is_ready else None,
         thumbnail_url=links.thumbnail(summary.garment_id) if summary.has_thumbnail else None,
+        ar_fit=_ar_fit(summary.ar_fit),
     )
 
 
@@ -130,6 +158,11 @@ def _container(request: Request) -> Container:
 
 def _links(request: Request) -> Links:
     return Links(_container(request).settings.public_base_path)
+
+
+def _view_response(request: Request, view: GarmentModelView) -> GarmentModelResponse:
+    return _response(_links(request), view.model, view.badge, view.is_stale, view.has_thumbnail,
+                     view.ar_fit)
 
 
 # Esquema de seguridad de OpenAPI: hace aparecer el candado "Authorize" en Swagger.
@@ -196,7 +229,7 @@ async def generate_garment_model(
     container = _container(request)
     model = await run_in_threadpool(container.generate_garment_model.execute, command)
     view = await run_in_threadpool(container.get_garment_model.info, model.garment_id.value, command.credentials)
-    return _response(_links(request), view.model, view.badge, view.is_stale, view.thumbnail_path is not None)
+    return _view_response(request, view)
 
 
 @router.get("/{garment_id}/model", summary="Descargar el .glb de una prenda",
@@ -210,18 +243,18 @@ async def download_garment_model(
     view: GarmentModelView = await run_in_threadpool(
         _container(request).get_garment_model.file, garment_id, creds)
     model = view.model
-    return FileResponse(
-        view.file_path,
-        media_type="model/gltf-binary",
-        filename=f"{model.garment_id}.glb",
-        headers={
-            "X-Garment-Id": model.garment_id.value,
-            "X-Model-Status": model.status.value,
-            "X-Source-Image-Version": str(model.source_image_version or ""),
-            "X-Model-Stale": "yes" if view.is_stale else "no",
-            "Cache-Control": "no-cache",       # se reemplaza al regenerar
-        },
-    )
+    filename = f"{model.garment_id.value}.glb"
+    headers = {
+        "X-Garment-Id": model.garment_id.value,
+        "X-Model-Status": model.status.value,
+        "X-Source-Image-Version": str(model.source_image_version or ""),
+        "X-Model-Stale": "yes" if view.is_stale else "no",
+        "Cache-Control": "private, no-store",
+        "Content-Disposition": f'attachment; filename="{filename}"',
+    }
+    if isinstance(view.file_path, bytes):
+        return Response(view.file_path, media_type="model/gltf-binary", headers=headers)
+    return FileResponse(view.file_path, media_type="model/gltf-binary", headers=headers)
 
 
 @router.get("/{garment_id}/model/info", response_model=GarmentModelResponse,
@@ -233,7 +266,7 @@ async def garment_model_info(
 ):
     view = await run_in_threadpool(_container(request).get_garment_model.info, garment_id,
                                    creds)
-    return _response(_links(request), view.model, view.badge, view.is_stale, view.thumbnail_path is not None)
+    return _view_response(request, view)
 
 
 @router.get("/{garment_id}/model/thumbnail", summary="Miniatura de la prenda (foto sin fondo)",
@@ -246,5 +279,25 @@ async def garment_model_thumbnail(
     """PNG de 512 x 512 con fondo transparente: la app le pone el color de la tarjeta."""
     view = await run_in_threadpool(_container(request).get_garment_model.thumbnail, garment_id,
                                    creds)
-    return FileResponse(view.thumbnail_path, media_type="image/png",
-                        headers={"X-Garment-Id": view.model.garment_id.value, "Cache-Control": "no-cache"})
+    headers = {"X-Garment-Id": view.model.garment_id.value, "Cache-Control": "private, no-store"}
+    if isinstance(view.thumbnail_path, bytes):
+        return Response(view.thumbnail_path, media_type="image/png", headers=headers)
+    return FileResponse(view.thumbnail_path, media_type="image/png", headers=headers)
+
+
+@router.put("/{garment_id}/model/ar-fit", response_model=GarmentModelResponse,
+            summary="Guardar cómo se coloca el modelo en la cara (calibración)")
+async def calibrate_garment_model_ar_fit(
+    request: Request,
+    garment_id: str,
+    fit: ArFitRequest,
+    creds: Credentials = Depends(credentials),
+):
+    """
+    Guarda el ajuste calibrado en la app para ESTE modelo (solo AR_READY). Desde entonces
+    `ar_fit.source` es `calibrated`. Regenerar el modelo descarta la calibración.
+    Límites: desplazamientos de ±0.03 m, escala de 0.5 a 2 e inclinación de ±30°.
+    """
+    view = await run_in_threadpool(_container(request).calibrate_ar_fit.execute, garment_id, creds,
+                                   fit.model_dump())
+    return _view_response(request, view)

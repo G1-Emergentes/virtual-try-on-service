@@ -68,6 +68,9 @@ class InMemoryRepository:
     def thumbnail_file(self, garment_id):
         return Path("thumb.png") if garment_id.value in self.thumbnails else None
 
+    def has_thumbnail(self, garment_id):
+        return self.thumbnail_file(garment_id) is not None
+
 
 class FakeGenerator:
     def __init__(self, tmp_dir: Path, fail: bool = False):

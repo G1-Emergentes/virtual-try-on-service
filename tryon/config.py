@@ -1,6 +1,7 @@
 """Configuración del servicio, leída de variables de entorno (archivo .env)."""
+import json
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass(frozen=True)
@@ -24,6 +25,13 @@ class Settings:
     diagnostics_key: str = ""
     # Mostrar Swagger (/docs, /redoc, /openapi.json). En producción: false.
     expose_docs: bool = True
+    # Ajuste en la cara por defecto de cada categoría con RA (sin calibrar), p. ej.
+    # {"glasses": {"offset_m": [0, 0.003, 0.006], "scale": 1.0, "pitch_deg": 0}}.
+    # Vacío = valores del dominio. Se valida al arrancar.
+    ar_fits: dict = field(default_factory=dict)
+    storage_url: str = ""
+    storage_key: str = ""
+    dc_storage_internal_url: str = ""
 
     @property
     def local_mode(self) -> bool:
@@ -44,7 +52,24 @@ class Settings:
             public_base_path=_normalize_path(os.getenv("PUBLIC_BASE_PATH", api_prefix)),
             diagnostics_key=os.getenv("DIAGNOSTICS_KEY", "").strip(),
             expose_docs=os.getenv("EXPOSE_DOCS", "true").strip().lower() in ("1", "true", "yes"),
+            ar_fits=_ar_fits_from_env(),
+            storage_url=os.getenv("MODEL_STORAGE_URL", "").strip().rstrip("/"),
+            storage_key=os.getenv("MODEL_STORAGE_KEY", "").strip(),
+            dc_storage_internal_url=os.getenv("DC_STORAGE_INTERNAL_URL", "").strip().rstrip("/"),
         )
+
+
+def _ar_fits_from_env() -> dict:
+    """AR_FIT_GLASSES='{"offset_m": [0, 0.003, 0.006], "scale": 1.0, "pitch_deg": 0}'."""
+    fits = {}
+    for category in ("glasses",):
+        raw = os.getenv(f"AR_FIT_{category.upper()}", "").strip()
+        if raw:
+            try:
+                fits[category] = json.loads(raw)
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"AR_FIT_{category.upper()} no es JSON válido: {exc}") from exc
+    return fits
 
 
 def _normalize_path(path: str) -> str:
