@@ -80,5 +80,9 @@ class GenerationFailed(DomainError):
     code = "GENERATION_FAILED"
 
 
+class ModelStorageUnavailable(DomainError):
+    code = "MODEL_STORAGE_UNAVAILABLE"
+
+
 class InsufficientGpuMemory(GenerationFailed):
     code = "INSUFFICIENT_GPU_MEMORY"

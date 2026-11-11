@@ -24,6 +24,9 @@ class Settings:
     diagnostics_key: str = ""
     # Mostrar Swagger (/docs, /redoc, /openapi.json). En producción: false.
     expose_docs: bool = True
+    storage_url: str = ""
+    storage_key: str = ""
+    dc_storage_internal_url: str = ""
 
     @property
     def local_mode(self) -> bool:
@@ -44,6 +47,9 @@ class Settings:
             public_base_path=_normalize_path(os.getenv("PUBLIC_BASE_PATH", api_prefix)),
             diagnostics_key=os.getenv("DIAGNOSTICS_KEY", "").strip(),
             expose_docs=os.getenv("EXPOSE_DOCS", "true").strip().lower() in ("1", "true", "yes"),
+            storage_url=os.getenv("MODEL_STORAGE_URL", "").strip().rstrip("/"),
+            storage_key=os.getenv("MODEL_STORAGE_KEY", "").strip(),
+            dc_storage_internal_url=os.getenv("DC_STORAGE_INTERNAL_URL", "").strip().rstrip("/"),
         )
 
 

@@ -167,6 +167,26 @@ Variables principales (`.env`):
 | `PUBLIC_BASE_PATH` | Ruta con la que la app ve el servicio; se usa en `model_url` y `thumbnail_url`. Por defecto, igual a `API_PREFIX`. |
 | `GEMINI_API_KEY` | Opcional: validación de fotos en `/generate` y `/check` |
 
+## Guardar modelos en Supabase Storage
+
+El proyecto de Supabase dedicado a los modelos se llama `3D_models` y su
+URL es `https://wnzwmnifadattbburlbk.supabase.co`. Para provisionar otro
+entorno, ejecuta [la migración del bucket](supabase/migrations/20261111200000_accessory_models.sql)
+en el SQL Editor del proyecto correspondiente. El bucket privado `accessory-models`
+contiene el GLB, la miniatura, una copia de la foto de origen y los metadatos.
+
+En el `.env` de Virtual Try-On, usa la URL HTTPS del nuevo proyecto en
+`MODEL_STORAGE_URL` y su clave secreta `sb_secret_…` en
+`MODEL_STORAGE_KEY`. Configura la clave exclusivamente en el servidor.
+`DC_API_URL` sigue apuntando al API de Digital Closet, que valida la
+propiedad del accesorio y proporciona la foto original. La app descarga
+el GLB desde el API 3D con su sesión de IAM.
+
+Si Digital Closet usa Supabase local en Windows y Virtual Try-On corre en
+Docker, `DC_STORAGE_INTERNAL_URL=http://host.docker.internal:54421` permite
+resolver las URLs firmadas de las fotos del armario. Los modelos se guardan
+en el proyecto configurado en `MODEL_STORAGE_URL`.
+
 ## Probar desde PowerShell
 
 Con el Digital Closet:

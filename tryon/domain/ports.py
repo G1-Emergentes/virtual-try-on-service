@@ -109,13 +109,16 @@ class ModelRepository(Protocol):
     def store_model_file(self, garment_id: GarmentId, generated_file: Path) -> None:
         ...
 
-    def model_file(self, garment_id: GarmentId) -> Optional[Path]:
+    def model_file(self, garment_id: GarmentId) -> Path | bytes | None:
         ...
 
     def store_thumbnail(self, garment_id: GarmentId, png: bytes) -> None:
         ...
 
-    def thumbnail_file(self, garment_id: GarmentId) -> Optional[Path]:
+    def thumbnail_file(self, garment_id: GarmentId) -> Path | bytes | None:
+        ...
+
+    def has_thumbnail(self, garment_id: GarmentId) -> bool:
         ...
 
 

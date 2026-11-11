@@ -11,6 +11,7 @@ visualization-worker. El Digital Closet lo valida contra IAM y responde 404 si l
 no es de ese usuario, así que la pertenencia queda comprobada sin acceder a su base.
 """
 from typing import Optional
+from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 
@@ -25,12 +26,22 @@ ACCESSORY_CATEGORY = "ACCESSORY"
 class DigitalClosetCatalog:
 
     def __init__(self, base_url: str, timeout_s: float = 15.0, max_photo_mb: int = 10,
-                 transport: Optional[httpx.BaseTransport] = None):
+                 transport: Optional[httpx.BaseTransport] = None, *, storage_internal_url: str = ""):
         # base_url, p. ej. http://host.docker.internal:8081/api/v1
         self._base_url = base_url.rstrip("/")
         self._timeout = timeout_s
         self._max_photo_bytes = max_photo_mb * 1024 * 1024
         self._transport = transport          # solo para pruebas (httpx.MockTransport)
+        self._storage_internal_url = urlsplit(storage_internal_url)
+        if storage_internal_url and (
+            self._storage_internal_url.scheme not in ("http", "https")
+            or not self._storage_internal_url.hostname
+            or self._storage_internal_url.username is not None
+            or self._storage_internal_url.path
+            or self._storage_internal_url.query
+            or self._storage_internal_url.fragment
+        ):
+            raise ValueError("DC_STORAGE_INTERNAL_URL debe ser un origen HTTP(S).")
 
     # --- Puerto GarmentCatalog -------------------------------------------------------------
 
@@ -68,6 +79,11 @@ class DigitalClosetCatalog:
             raise GarmentWithoutPhoto("La prenda todavía no tiene foto.")
         if not url.startswith(("http://", "https://")):
             raise CatalogUnavailable("El Digital Closet devolvió una URL de foto no absoluta.")
+        signed = urlsplit(url)
+        if self._storage_internal_url.hostname and signed.hostname in ("localhost", "127.0.0.1", "::1"):
+            url = urlunsplit(signed._replace(
+                scheme=self._storage_internal_url.scheme, netloc=self._storage_internal_url.netloc,
+            ))
         return GarmentPhoto(
             data=self._download(url),
             image_version=access.get("image_version"),

@@ -56,8 +56,8 @@ class GenerateGarmentModel:
             photo = self._catalog.get_photo(garment_id, command.credentials, command.upload)
             model = GarmentModel.start(garment_id, category, photo.image_version)
             self._repository.save(model)
-            self._repository.store_photo(garment_id, photo)
             try:
+                self._repository.store_photo(garment_id, photo)
                 generated = self._generator.generate(photo, category, command.options)
                 self._repository.store_model_file(garment_id, generated.file_path)
                 if generated.thumbnail_png:
@@ -66,8 +66,8 @@ class GenerateGarmentModel:
                 model.fail(exc.message)
                 self._repository.save(model)
                 raise
-            except Exception as exc:          # error inesperado: se registra y se propaga
-                model.fail(f"Error inesperado: {exc}")
+            except Exception:                 # error inesperado: se registra y se propaga
+                model.fail("Error inesperado al generar o guardar el modelo.")
                 self._repository.save(model)
                 raise
             model.complete(generated.job_id, generated.details)

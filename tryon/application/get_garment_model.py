@@ -4,7 +4,7 @@ Casos de uso de consulta del modelo 3D de una prenda.
 Antes de responder se pregunta al catálogo por la prenda: así solo su dueño puede ver o
 descargar el modelo, y se sabe si la foto cambió desde que se generó (is_stale).
 """
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Optional
 
@@ -20,8 +20,9 @@ class GarmentModelView:
     model: GarmentModel
     is_stale: bool
     badge: Optional[ModelBadge]
-    file_path: Optional[Path] = None        # .glb, solo si está READY
-    thumbnail_path: Optional[Path] = None   # miniatura, si existe
+    file_path: Path | bytes | None = None
+    thumbnail_path: Path | bytes | None = None
+    has_thumbnail: bool = False
 
 
 @dataclass(frozen=True)
@@ -55,26 +56,27 @@ class GetGarmentModel:
             model=model,
             is_stale=model.is_stale(garment.image_version),
             badge=model.badge(self._ar_policy),
-            file_path=self._repository.model_file(gid) if model.is_ready else None,
-            thumbnail_path=self._repository.thumbnail_file(gid),
+            has_thumbnail=self._repository.has_thumbnail(gid),
         )
 
     def file(self, garment_id: str, credentials: Credentials) -> GarmentModelView:
         """El .glb listo para descargar."""
         view = self.info(garment_id, credentials)
-        if not view.model.is_ready or view.file_path is None:
+        asset = self._repository.model_file(view.model.garment_id) if view.model.is_ready else None
+        if asset is None:
             raise ModelNotReady(
                 "El modelo 3D aún no está listo." if view.model.status.value == "PROCESSING"
                 else f"La última generación falló: {view.model.error}",
                 status=view.model.status.value)
-        return view
+        return replace(view, file_path=asset)
 
     def thumbnail(self, garment_id: str, credentials: Credentials) -> GarmentModelView:
         """La miniatura (foto sin fondo) para la tarjeta de la prenda."""
         view = self.info(garment_id, credentials)
-        if view.thumbnail_path is None:
+        asset = self._repository.thumbnail_file(view.model.garment_id) if view.has_thumbnail else None
+        if asset is None:
             raise ModelNotFound("Esta prenda no tiene miniatura. Se crea al generar el modelo 3D.")
-        return view
+        return replace(view, thumbnail_path=asset)
 
     def many(self, garment_ids: list[str], credentials: Credentials) -> list[GarmentModelSummary]:
         """
@@ -97,6 +99,6 @@ class GetGarmentModel:
                 model=model,
                 is_stale=bool(model and model.is_stale(garment.image_version)),
                 badge=model.badge(self._ar_policy) if model else None,
-                has_thumbnail=garment is not None and self._repository.thumbnail_file(gid) is not None,
+                has_thumbnail=garment is not None and self._repository.has_thumbnail(gid),
             ))
         return result

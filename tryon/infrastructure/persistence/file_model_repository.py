@@ -10,7 +10,7 @@ Cada prenda tiene su carpeta, con el mismo ID del Digital Closet:
         metadata.json    estado, versión de la foto, fechas y datos de la generación
 
 El modelo de dominio se convierte a JSON y de vuelta aquí, no en el dominio.
-Para producción, este adaptador se cambia por uno de Supabase Storage o S3 sin tocar el resto.
+La configuración de Storage permite usar el adaptador de Supabase en su lugar.
 """
 import json
 import os
@@ -73,6 +73,9 @@ class FileModelRepository:
     def thumbnail_file(self, garment_id: GarmentId) -> Optional[Path]:
         path = self._dir(garment_id) / THUMBNAIL_FILE
         return path if path.exists() else None
+
+    def has_thumbnail(self, garment_id: GarmentId) -> bool:
+        return self.thumbnail_file(garment_id) is not None
 
     # --- Detalles --------------------------------------------------------------------------
 

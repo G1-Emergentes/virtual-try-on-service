@@ -23,7 +23,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, File, Query, Request, UploadFile
 from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
 
@@ -196,7 +196,7 @@ async def generate_garment_model(
     container = _container(request)
     model = await run_in_threadpool(container.generate_garment_model.execute, command)
     view = await run_in_threadpool(container.get_garment_model.info, model.garment_id.value, command.credentials)
-    return _response(_links(request), view.model, view.badge, view.is_stale, view.thumbnail_path is not None)
+    return _response(_links(request), view.model, view.badge, view.is_stale, view.has_thumbnail)
 
 
 @router.get("/{garment_id}/model", summary="Descargar el .glb de una prenda",
@@ -210,18 +210,18 @@ async def download_garment_model(
     view: GarmentModelView = await run_in_threadpool(
         _container(request).get_garment_model.file, garment_id, creds)
     model = view.model
-    return FileResponse(
-        view.file_path,
-        media_type="model/gltf-binary",
-        filename=f"{model.garment_id}.glb",
-        headers={
-            "X-Garment-Id": model.garment_id.value,
-            "X-Model-Status": model.status.value,
-            "X-Source-Image-Version": str(model.source_image_version or ""),
-            "X-Model-Stale": "yes" if view.is_stale else "no",
-            "Cache-Control": "no-cache",       # se reemplaza al regenerar
-        },
-    )
+    filename = f"{model.garment_id.value}.glb"
+    headers = {
+        "X-Garment-Id": model.garment_id.value,
+        "X-Model-Status": model.status.value,
+        "X-Source-Image-Version": str(model.source_image_version or ""),
+        "X-Model-Stale": "yes" if view.is_stale else "no",
+        "Cache-Control": "private, no-store",
+        "Content-Disposition": f'attachment; filename="{filename}"',
+    }
+    if isinstance(view.file_path, bytes):
+        return Response(view.file_path, media_type="model/gltf-binary", headers=headers)
+    return FileResponse(view.file_path, media_type="model/gltf-binary", headers=headers)
 
 
 @router.get("/{garment_id}/model/info", response_model=GarmentModelResponse,
@@ -233,7 +233,7 @@ async def garment_model_info(
 ):
     view = await run_in_threadpool(_container(request).get_garment_model.info, garment_id,
                                    creds)
-    return _response(_links(request), view.model, view.badge, view.is_stale, view.thumbnail_path is not None)
+    return _response(_links(request), view.model, view.badge, view.is_stale, view.has_thumbnail)
 
 
 @router.get("/{garment_id}/model/thumbnail", summary="Miniatura de la prenda (foto sin fondo)",
@@ -246,5 +246,7 @@ async def garment_model_thumbnail(
     """PNG de 512 x 512 con fondo transparente: la app le pone el color de la tarjeta."""
     view = await run_in_threadpool(_container(request).get_garment_model.thumbnail, garment_id,
                                    creds)
-    return FileResponse(view.thumbnail_path, media_type="image/png",
-                        headers={"X-Garment-Id": view.model.garment_id.value, "Cache-Control": "no-cache"})
+    headers = {"X-Garment-Id": view.model.garment_id.value, "Cache-Control": "private, no-store"}
+    if isinstance(view.thumbnail_path, bytes):
+        return Response(view.thumbnail_path, media_type="image/png", headers=headers)
+    return FileResponse(view.thumbnail_path, media_type="image/png", headers=headers)

@@ -20,6 +20,7 @@ STATUS_BY_ERROR = [
     (e.GarmentWithoutPhoto, 422),
     (e.UnsupportedAccessory, 422),
     (e.CatalogUnavailable, 503),
+    (e.ModelStorageUnavailable, 503),
     (e.InsufficientGpuMemory, 507),
     (e.GenerationFailed, 500),
 ]
