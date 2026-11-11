@@ -13,13 +13,14 @@ Reglas:
   cambia de foto, el modelo queda desactualizado (is_stale) y conviene regenerarlo.
 - Estados: PROCESSING -> READY | FAILED.
 """
+import math
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Optional
 
-from .errors import InvalidGarmentId
+from .errors import InvalidArFit, InvalidGarmentId, UnsupportedAccessory
 
 
 def utc_now() -> datetime:
@@ -87,17 +88,115 @@ class ModelBadge(str, Enum):
     MODEL_3D = "MODEL_3D"
 
 
+class ArFitSource(str, Enum):
+    DEFAULT = "default"          # valor por defecto de la categoría (configurable)
+    CALIBRATED = "calibrated"    # ajustado para este modelo desde la app
+
+
+@dataclass(frozen=True)
+class ArFit:
+    """
+    Cómo se coloca el modelo en la cara (valor inmutable).
+
+    El .glb ya trae tamaño real y el origen en el punto de anclaje (lentes: puente nasal,
+    plano frontal). Esto es el ajuste fino que aplica la app sobre ese contrato:
+    - anchor: punto de la cara. Lentes -> "nose_bridge" (landmark 168 de MediaPipe).
+    - offset_m: desplazamiento en metros en los ejes de la cara (x derecha, y arriba,
+      z hacia fuera de la cara).
+    - scale: factor sobre el tamaño real. pitch_deg: inclinación sobre el eje x.
+    """
+
+    anchor: str
+    offset_m: tuple[float, float, float]
+    scale: float = 1.0
+    pitch_deg: float = 0.0
+    source: ArFitSource = ArFitSource.DEFAULT
+
+    # Límites: fuera de ellos el modelo ya no estaría en la cara.
+    MAX_OFFSET_M = 0.03
+    MIN_SCALE, MAX_SCALE = 0.5, 2.0
+    MAX_PITCH_DEG = 30.0
+
+    def __post_init__(self):
+        if not self.anchor:
+            raise InvalidArFit("Falta el punto de anclaje.")
+        try:
+            offset = tuple(float(v) for v in self.offset_m)
+            scale, pitch = float(self.scale), float(self.pitch_deg)
+        except (TypeError, ValueError):
+            raise InvalidArFit("offset_m, scale y pitch_deg deben ser números.")
+        if len(offset) != 3 or not all(math.isfinite(v) for v in (*offset, scale, pitch)):
+            raise InvalidArFit("offset_m debe tener 3 números finitos (x, y, z) en metros.")
+        if any(abs(v) > self.MAX_OFFSET_M for v in offset):
+            raise InvalidArFit(f"Cada desplazamiento debe estar entre ±{self.MAX_OFFSET_M} m.")
+        if not self.MIN_SCALE <= scale <= self.MAX_SCALE:
+            raise InvalidArFit(f"La escala debe estar entre {self.MIN_SCALE} y {self.MAX_SCALE}.")
+        if abs(pitch) > self.MAX_PITCH_DEG:
+            raise InvalidArFit(f"La inclinación debe estar entre ±{self.MAX_PITCH_DEG}°.")
+        object.__setattr__(self, "offset_m", offset)
+        object.__setattr__(self, "scale", scale)
+        object.__setattr__(self, "pitch_deg", pitch)
+
+    @classmethod
+    def from_dict(cls, data: dict, anchor: str,
+                  source: ArFitSource = ArFitSource.DEFAULT) -> "ArFit":
+        """El anclaje lo fija la categoría, no quien envía el ajuste."""
+        if not isinstance(data, dict):
+            raise InvalidArFit("El ajuste debe ser un objeto.")
+        return cls(anchor=anchor, offset_m=data.get("offset_m", (0.0, 0.0, 0.0)),
+                   scale=data.get("scale", 1.0), pitch_deg=data.get("pitch_deg", 0.0),
+                   source=source)
+
+    def to_dict(self) -> dict:
+        return {"anchor": self.anchor, "offset_m": list(self.offset_m), "scale": self.scale,
+                "pitch_deg": self.pitch_deg, "source": self.source.value}
+
+
+# Punto de anclaje de cada categoría (coincide con el origen del .glb, ver postprocess.py).
+AR_ANCHORS = {"glasses": "nose_bridge"}
+
+# Ajuste por defecto: frente de los lentes 6 mm delante del puente nasal y 3 mm más arriba.
+DEFAULT_AR_FITS = {"glasses": {"offset_m": [0.0, 0.003, 0.006], "scale": 1.0, "pitch_deg": 0.0}}
+
+
 class ArSupportPolicy:
     """
-    Qué tipos de accesorio ya se pueden probar en RA. Hoy solo lentes: es lo más
-    configurado (anclaje en el puente nasal y tamaño real). Ampliar = agregar la categoría.
+    Qué tipos de accesorio ya se pueden probar en RA y cómo se colocan en la cara. Hoy
+    solo lentes: es lo más configurado (anclaje en el puente nasal y tamaño real).
+    Ampliar = agregar la categoría, su anclaje y su ajuste por defecto.
     """
 
-    def __init__(self, ar_categories: frozenset = frozenset({"glasses"})):
+    def __init__(self, ar_categories: frozenset = frozenset({"glasses"}),
+                 default_fits: Optional[dict] = None):
         self._ar_categories = frozenset(ar_categories)
+        fits = {**DEFAULT_AR_FITS, **(default_fits or {})}
+        # Se valida al arrancar: un ajuste por defecto inválido es un error de configuración.
+        self._default_fits = {
+            category: ArFit.from_dict(fit, AR_ANCHORS[category])
+            for category, fit in fits.items() if category in AR_ANCHORS
+        }
 
     def supports_ar(self, category: "AccessoryCategory") -> bool:
-        return category.value in self._ar_categories
+        return category.value in self._ar_categories and category.value in self._default_fits
+
+    def fit_for(self, model: "GarmentModel") -> Optional[ArFit]:
+        """Ajuste de un modelo listo para RA: el calibrado si lo tiene, si no el de su categoría."""
+        if model.badge(self) is not ModelBadge.AR_READY:
+            return None
+        calibrated = model.details.get("ar_fit")
+        if calibrated is not None:
+            try:
+                return ArFit.from_dict(calibrated, AR_ANCHORS[model.category.value],
+                                       ArFitSource.CALIBRATED)
+            except InvalidArFit:
+                pass    # dato antiguo o corrupto: se usa el de la categoría
+        return self._default_fits[model.category.value]
+
+    def calibrated_fit(self, model: "GarmentModel", data: dict) -> ArFit:
+        """Valida el ajuste que envía la app para este modelo."""
+        if model.badge(self) is not ModelBadge.AR_READY:
+            raise UnsupportedAccessory("Este modelo no se puede probar en realidad aumentada.")
+        return ArFit.from_dict(data, AR_ANCHORS[model.category.value], ArFitSource.CALIBRATED)
 
 
 class ModelStatus(str, Enum):
@@ -157,6 +256,14 @@ class GarmentModel:
         if not self.is_ready:
             return None
         return ModelBadge.AR_READY if policy.supports_ar(self.category) else ModelBadge.MODEL_3D
+
+    def calibrate(self, fit: ArFit, now: Optional[datetime] = None) -> None:
+        """Guarda el ajuste en la cara de ESTE modelo. Regenerar lo descarta (otra geometría)."""
+        self._require(ModelStatus.READY)
+        stored = fit.to_dict()
+        del stored["source"]
+        self.details = {**self.details, "ar_fit": stored}
+        self.updated_at = now or utc_now()
 
     def is_stale(self, current_image_version: Optional[int]) -> bool:
         """True si la prenda tiene ahora otra foto que la usada para generar este modelo."""

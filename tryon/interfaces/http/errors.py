@@ -12,6 +12,7 @@ from ...domain import errors as e
 STATUS_BY_ERROR = [
     (e.InvalidGarmentId, 400),
     (e.InvalidPhoto, 400),
+    (e.InvalidArFit, 400),
     (e.NotAuthenticated, 401),
     (e.GarmentNotFound, 404),
     (e.ModelNotFound, 404),

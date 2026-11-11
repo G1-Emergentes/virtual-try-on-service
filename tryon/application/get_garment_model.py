@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Optional
 
 from ..domain.errors import InvalidGarmentId, ModelNotFound, ModelNotReady
-from ..domain.garment_model import ArSupportPolicy, GarmentId, GarmentModel, ModelBadge
+from ..domain.garment_model import ArFit, ArSupportPolicy, GarmentId, GarmentModel, ModelBadge
 from ..domain.ports import Credentials, GarmentCatalog, ModelRepository
 
 MAX_BATCH = 100
@@ -23,6 +23,7 @@ class GarmentModelView:
     file_path: Path | bytes | None = None
     thumbnail_path: Path | bytes | None = None
     has_thumbnail: bool = False
+    ar_fit: Optional[ArFit] = None           # cómo se coloca en la cara (solo AR_READY)
 
 
 @dataclass(frozen=True)
@@ -35,6 +36,7 @@ class GarmentModelSummary:
     is_stale: bool
     badge: Optional[ModelBadge]
     has_thumbnail: bool
+    ar_fit: Optional[ArFit] = None
 
 
 class GetGarmentModel:
@@ -57,6 +59,7 @@ class GetGarmentModel:
             is_stale=model.is_stale(garment.image_version),
             badge=model.badge(self._ar_policy),
             has_thumbnail=self._repository.has_thumbnail(gid),
+            ar_fit=self._ar_policy.fit_for(model),
         )
 
     def file(self, garment_id: str, credentials: Credentials) -> GarmentModelView:
@@ -100,5 +103,6 @@ class GetGarmentModel:
                 is_stale=bool(model and model.is_stale(garment.image_version)),
                 badge=model.badge(self._ar_policy) if model else None,
                 has_thumbnail=garment is not None and self._repository.has_thumbnail(gid),
+                ar_fit=self._ar_policy.fit_for(model) if model else None,
             ))
         return result

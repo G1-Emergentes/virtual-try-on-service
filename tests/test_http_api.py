@@ -11,6 +11,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from tryon.application.calibrate_ar_fit import CalibrateArFit
 from tryon.application.generate_garment_model import GenerateGarmentModel
 from tryon.application.get_garment_model import GetGarmentModel
 from tryon.bootstrap import Container
@@ -71,7 +72,8 @@ def make_client(tmp_path, catalog) -> TestClient:
     settings = Settings(str(tmp_path / "out"), 1024, 10, "" if isinstance(catalog, LocalGarmentCatalog) else DC, 5)
     app.state.container = Container(settings=settings, pipeline=None,
                                     generate_garment_model=GenerateGarmentModel(catalog, repo, generator),
-                                    get_garment_model=GetGarmentModel(catalog, repo))
+                                    get_garment_model=GetGarmentModel(catalog, repo),
+                                    calibrate_ar_fit=CalibrateArFit(catalog, repo))
     return TestClient(app)
 
 
@@ -212,3 +214,66 @@ def test_diagnostico_oculto_sin_clave(tmp_path):
     assert c.get("/health/details", headers={"X-Diagnostics-Key": "otra"}).status_code == 404
     r = c.get("/health/details", headers={"X-Diagnostics-Key": "secreta"})
     assert r.status_code == 200 and r.json()["model"] == "spar3d"
+
+
+# --- Colocación en la cara (ar_fit) ------------------------------------------------------
+
+def test_lentes_traen_ar_fit_por_defecto(client):
+    r = client.post(f"{P}/garments/{GLASSES_ID}/model", headers=AUTH)
+    fit = r.json()["ar_fit"]
+    assert fit == {"anchor": "nose_bridge", "offset_m": [0.0, 0.003, 0.006], "scale": 1.0,
+                   "pitch_deg": 0.0, "source": "default"}
+    items = client.get(f"{P}/garments/models?ids={GLASSES_ID},{TOP_ID}", headers=AUTH).json()["items"]
+    assert items[0]["ar_fit"] == fit
+    assert items[1]["ar_fit"] is None                     # sin modelo: sin ajuste
+
+
+def test_gorra_no_trae_ar_fit_ni_se_calibra(tmp_path):
+    c = make_client(tmp_path, LocalGarmentCatalog())
+    r = c.post(f"{P}/garments/{GLASSES_ID}/model?category=hat", files={"image": ("g.jpg", b"x", "image/jpeg")})
+    assert r.json()["ar_fit"] is None
+    r = c.put(f"{P}/garments/{GLASSES_ID}/model/ar-fit", json={"offset_m": [0, 0, 0]})
+    assert r.status_code == 422 and r.json()["error"]["code"] == "UNSUPPORTED_ACCESSORY"
+
+
+def test_calibrar_ar_fit_se_guarda_y_regenerar_lo_descarta(client, tmp_path):
+    client.post(f"{P}/garments/{GLASSES_ID}/model", headers=AUTH)
+    body = {"offset_m": [0.0, 0.0045, 0.0075], "scale": 1.04, "pitch_deg": -3}
+    r = client.put(f"{P}/garments/{GLASSES_ID}/model/ar-fit", headers=AUTH, json=body)
+    assert r.status_code == 200, r.text
+    assert r.json()["ar_fit"] == {**body, "anchor": "nose_bridge", "pitch_deg": -3.0,
+                                  "source": "calibrated"}
+
+    # persiste con el modelo y se ve en las consultas
+    meta = json.loads((tmp_path / "out" / "garments" / GLASSES_ID / "metadata.json").read_text())
+    assert meta["details"]["ar_fit"]["offset_m"] == [0.0, 0.0045, 0.0075]
+    info = client.get(f"{P}/garments/{GLASSES_ID}/model/info", headers=AUTH).json()
+    assert info["ar_fit"]["source"] == "calibrated"
+
+    # otra generación es otra geometría: vuelve al ajuste por defecto
+    client.post(f"{P}/garments/{GLASSES_ID}/model", headers=AUTH)
+    info = client.get(f"{P}/garments/{GLASSES_ID}/model/info", headers=AUTH).json()
+    assert info["ar_fit"]["source"] == "default"
+
+
+@pytest.mark.parametrize("body,status,code", [
+    ({"offset_m": [0, 0.2, 0]}, 400, "INVALID_AR_FIT"),          # fuera de la cara
+    ({"offset_m": [0, 0, 0], "scale": 5}, 400, "INVALID_AR_FIT"),
+    ({"offset_m": [0, 0, 0], "pitch_deg": 90}, 400, "INVALID_AR_FIT"),
+])
+def test_calibrar_ar_fit_rechaza_valores_absurdos(client, body, status, code):
+    client.post(f"{P}/garments/{GLASSES_ID}/model", headers=AUTH)
+    r = client.put(f"{P}/garments/{GLASSES_ID}/model/ar-fit", headers=AUTH, json=body)
+    assert r.status_code == status and r.json()["error"]["code"] == code
+
+
+def test_calibrar_ar_fit_valida_forma_dueno_y_modelo(client):
+    r = client.put(f"{P}/garments/{GLASSES_ID}/model/ar-fit", headers=AUTH, json={"offset_m": [0, 0]})
+    assert r.status_code == 422                                        # forma inválida (FastAPI)
+    r = client.put(f"{P}/garments/{GLASSES_ID}/model/ar-fit", headers=AUTH, json={"offset_m": [0, 0, 0]})
+    assert r.status_code == 404 and r.json()["error"]["code"] == "MODEL_NOT_FOUND"
+    r = client.put(f"{P}/garments/{OTHER_USER_GARMENT}/model/ar-fit", headers=AUTH,
+                   json={"offset_m": [0, 0, 0]})
+    assert r.status_code == 404 and r.json()["error"]["code"] == "GARMENT_NOT_FOUND"
+    r = client.put(f"{P}/garments/{GLASSES_ID}/model/ar-fit", json={"offset_m": [0, 0, 0]})
+    assert r.status_code == 401

@@ -3,7 +3,9 @@ Raíz de composición: el único lugar que conoce todas las piezas concretas y l
 Los casos de uso reciben puertos; aquí se decide qué adaptador implementa cada uno.
 """
 from dataclasses import dataclass
+from typing import Optional
 
+from .application.calibrate_ar_fit import CalibrateArFit
 from .application.generate_garment_model import GenerateGarmentModel
 from .application.get_garment_model import GetGarmentModel
 from .config import Settings
@@ -22,6 +24,7 @@ class Container:
     pipeline: AccessoryModelPipeline
     generate_garment_model: GenerateGarmentModel
     get_garment_model: GetGarmentModel
+    calibrate_ar_fit: Optional[CalibrateArFit] = None
 
 
 def build_catalog(settings: Settings) -> GarmentCatalog:
@@ -48,9 +51,11 @@ def build_container(settings: Settings, pipeline: AccessoryModelPipeline) -> Con
     else:
         repository = FileModelRepository(settings.output_dir)
     generator = Spar3dModelGenerator(pipeline, settings.texture_resolution)
+    ar_policy = ArSupportPolicy(settings.ar_categories, settings.ar_fits)
     return Container(
         settings=settings,
         pipeline=pipeline,
         generate_garment_model=GenerateGarmentModel(catalog, repository, generator),
-        get_garment_model=GetGarmentModel(catalog, repository, ArSupportPolicy(settings.ar_categories)),
+        get_garment_model=GetGarmentModel(catalog, repository, ar_policy),
+        calibrate_ar_fit=CalibrateArFit(catalog, repository, ar_policy),
     )

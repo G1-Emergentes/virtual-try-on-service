@@ -26,6 +26,12 @@ class InvalidPhoto(DomainError):
     code = "INVALID_PHOTO"
 
 
+class InvalidArFit(DomainError):
+    """El ajuste en la cara (ar_fit) está fuera de los límites razonables."""
+
+    code = "INVALID_AR_FIT"
+
+
 class UnsupportedAccessory(DomainError):
     """La prenda no es un accesorio soportado (por ahora: lentes y gorras o sombreros)."""
 
