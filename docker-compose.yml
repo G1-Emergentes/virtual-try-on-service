@@ -1,0 +1,36 @@
+services:
+  ai-3d:
+    build:
+      context: .
+      args:
+        # spar3d (por defecto) o sf3d. Se lee de .env; al cambiarlo hay que reconstruir.
+        RECON_MODEL: ${RECON_MODEL:-spar3d}
+    image: mirage-ai-3d:${RECON_MODEL:-spar3d}
+    container_name: mirage-ai-3d
+    ports:
+      - "8000:8000"
+    env_file: .env
+    environment:
+      RECON_MODEL: ${RECON_MODEL:-spar3d}
+      # SPAR3D usa ~10.5 GB normal y ~7 GB en bajo consumo: con 8 GB hace falta este modo
+      SPAR3D_LOW_VRAM: ${SPAR3D_LOW_VRAM:-1}
+    # Permite llegar al Digital Closet que corre en Windows (fuera de Docker):
+    # DC_API_URL=http://host.docker.internal:8081/api/v1
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      # Pesos de los modelos y quitafondos: se descargan una sola vez
+      - model-cache:/cache
+      # Los .glb generados quedan visibles en tu carpeta ./outputs
+      - ./outputs:/outputs
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    restart: unless-stopped
+
+volumes:
+  model-cache:
