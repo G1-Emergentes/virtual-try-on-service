@@ -12,6 +12,9 @@ Reglas:
 - El modelo recuerda de qué versión de la foto salió (source_image_version). Si la prenda
   cambia de foto, el modelo queda desactualizado (is_stale) y conviene regenerarlo.
 - Estados: PROCESSING -> READY | FAILED.
+- Un modelo listo tiene siempre la variante completa (FULL, para el visor 3D) y puede
+  tener además la variante para RA (AR: sin patillas, para el probador). Las dos
+  comparten origen y tamaño, así que usan el mismo ajuste en la cara (ArFit).
 """
 import math
 import uuid
@@ -88,6 +91,18 @@ class ModelBadge(str, Enum):
     MODEL_3D = "MODEL_3D"
 
 
+class ModelVariant(str, Enum):
+    """
+    Versiones del .glb de un mismo modelo.
+    - FULL: el modelo completo (con patillas). Lo muestra el visor 3D.
+    - AR: sin patillas, cortado en las bisagras. Lo usa el probador de realidad aumentada:
+      en la cara las patillas quedan detrás de la cabeza y se verían flotando.
+    """
+
+    FULL = "full"
+    AR = "ar"
+
+
 class ArFitSource(str, Enum):
     DEFAULT = "default"          # valor por defecto de la categoría (configurable)
     CALIBRATED = "calibrated"    # ajustado para este modelo desde la app
@@ -98,9 +113,10 @@ class ArFit:
     """
     Cómo se coloca el modelo en la cara (valor inmutable).
 
-    El .glb ya trae tamaño real y el origen en el punto de anclaje (lentes: puente nasal,
-    plano frontal). Esto es el ajuste fino que aplica la app sobre ese contrato:
-    - anchor: punto de la cara. Lentes -> "nose_bridge" (landmark 168 de MediaPipe).
+    El .glb ya trae tamaño real y el origen en el punto de anclaje (lentes: centro del
+    puente a la altura del centro de los cristales, plano frontal). Esto es el ajuste fino
+    que aplica la app sobre ese contrato:
+    - anchor: punto de la cara. Lentes -> "nose_bridge" (landmark 6 de MediaPipe).
     - offset_m: desplazamiento en metros en los ejes de la cara (x derecha, y arriba,
       z hacia fuera de la cara).
     - scale: factor sobre el tamaño real. pitch_deg: inclinación sobre el eje x.
@@ -153,10 +169,14 @@ class ArFit:
 
 
 # Punto de anclaje de cada categoría (coincide con el origen del .glb, ver postprocess.py).
+# nose_bridge = landmark 6 de MediaPipe (puente nasal, entre los ojos).
 AR_ANCHORS = {"glasses": "nose_bridge"}
 
-# Ajuste por defecto: frente de los lentes 6 mm delante del puente nasal y 3 mm más arriba.
-DEFAULT_AR_FITS = {"glasses": {"offset_m": [0.0, 0.003, 0.006], "scale": 1.0, "pitch_deg": 0.0}}
+# Ajuste por defecto de los lentes, calculado con el modelo canónico de MediaPipe (cm):
+# landmark 6 = (0, 2.47, 5.79) y centro de los ojos en y = 2.62. Subir 1.5 mm pone los
+# cristales a la altura de los ojos; adelantar 2 mm deja el frente en z ≈ 6.0, unos
+# 12 mm delante de la córnea (distancia habitual). Escala 1: el .glb ya mide 14 cm.
+DEFAULT_AR_FITS = {"glasses": {"offset_m": [0.0, 0.0015, 0.002], "scale": 1.0, "pitch_deg": 0.0}}
 
 
 class ArSupportPolicy:
@@ -197,6 +217,10 @@ class ArSupportPolicy:
         if model.badge(self) is not ModelBadge.AR_READY:
             raise UnsupportedAccessory("Este modelo no se puede probar en realidad aumentada.")
         return ArFit.from_dict(data, AR_ANCHORS[model.category.value], ArFitSource.CALIBRATED)
+
+
+# Clave de details donde la generación describe la variante AR (cómo se cortó, etc.).
+AR_VARIANT_DETAILS = "ar_variant"
 
 
 class ModelStatus(str, Enum):
@@ -250,6 +274,15 @@ class GarmentModel:
     @property
     def is_ready(self) -> bool:
         return self.status is ModelStatus.READY
+
+    def has_variant(self, variant: ModelVariant) -> bool:
+        """
+        True si este modelo tiene esa variante del .glb. FULL existe en todo modelo listo;
+        AR solo si la generación la creó (lentes generados desde que existe la variante).
+        """
+        if not self.is_ready:
+            return False
+        return variant is ModelVariant.FULL or AR_VARIANT_DETAILS in self.details
 
     def badge(self, policy: ArSupportPolicy) -> Optional[ModelBadge]:
         """Etiqueta de la tarjeta. Sin modelo listo no hay etiqueta."""

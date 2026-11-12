@@ -7,6 +7,8 @@ Flujo:
 2. Obtener su foto actual.
 3. Registrar el modelo como PROCESSING (con la versión de la foto) y guardar la foto.
 4. Generar el .glb y su miniatura y guardarlos con el ID de la prenda -> READY.
+   Si el motor entrega la variante para RA (lentes sin patillas), se guarda también y se
+   anota en details["ar_variant"] cómo se creó (corte en bisagra o respaldo).
    Si falla -> FAILED con el motivo, y se propaga el error.
 
 Una prenda no puede tener dos generaciones a la vez (GenerationInProgress).
@@ -16,7 +18,8 @@ from dataclasses import dataclass
 from typing import Optional
 
 from ..domain.errors import GenerationFailed, UnsupportedAccessory, GenerationInProgress
-from ..domain.garment_model import AccessoryCategory, GarmentId, GarmentModel
+from ..domain.garment_model import (AR_VARIANT_DETAILS, AccessoryCategory, GarmentId, GarmentModel,
+                                    ModelVariant)
 from ..domain.ports import (Credentials, GarmentCatalog, GenerationOptions, ModelGenerator,
                             ModelRepository, PhotoUpload)
 
@@ -60,6 +63,10 @@ class GenerateGarmentModel:
                 self._repository.store_photo(garment_id, photo)
                 generated = self._generator.generate(photo, category, command.options)
                 self._repository.store_model_file(garment_id, generated.file_path)
+                details = dict(generated.details)
+                if generated.ar_file_path is not None:
+                    self._repository.store_model_file(garment_id, generated.ar_file_path, ModelVariant.AR)
+                    details[AR_VARIANT_DETAILS] = dict(generated.ar_details)
                 if generated.thumbnail_png:
                     self._repository.store_thumbnail(garment_id, generated.thumbnail_png)
             except GenerationFailed as exc:
@@ -70,7 +77,7 @@ class GenerateGarmentModel:
                 model.fail("Error inesperado al generar o guardar el modelo.")
                 self._repository.save(model)
                 raise
-            model.complete(generated.job_id, generated.details)
+            model.complete(generated.job_id, details)
             self._repository.save(model)
             return model
         finally:

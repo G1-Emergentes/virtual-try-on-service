@@ -16,10 +16,14 @@ Pasos comunes a todas las categorías:
 
 Pasos solo para lentes:
   - Detectar cristales y separarlos en una malla transparente.
-  - Recortar patillas (en RA las tapa la cabeza).
+  - Recortar patillas en modo full (en light, SPAR3D las genera bien y se conservan).
+  - Variante para RA (make_ar_variant): el mismo modelo cortado en las bisagras, para el
+    probador. El visor 3D usa el modelo completo.
 
 Categorías y anclaje (el origen 0,0,0 del .glb es el punto de anclaje):
-  glasses  -> puente nasal          ancho  14 cm
+  glasses  -> puente, a la altura    ancho  14 cm
+              del centro de los
+              cristales (plano frontal)
   hat      -> centro de la base     ancho  21 cm
   earrings -> parte superior        alto  4.5 cm
   generic  -> centro de la base     lado mayor 30 cm (visor 3D / piso)
@@ -777,6 +781,100 @@ def bridge_point(frame, cfg):
     return np.array([cx, y, frame.bounds[1, 2]])
 
 
+def lens_line_point(frame, lenses, cfg):
+    """
+    Punto de anclaje de los lentes: centro del frente a la altura de los cristales.
+
+    - x: centro del marco (puente).
+    - y: promedio de los centros de los dos cristales. Así el origen queda en la línea de
+      los ojos aunque el puente esté alto (doble puente, puente "keyhole"), y la app
+      solo tiene que llevarlo al puente nasal de la cara (landmark 6 de MediaPipe).
+    - z: plano frontal del marco.
+
+    Si no hay un cristal a cada lado, se usa la barra del puente (bridge_point).
+    Devuelve (punto, "lens_line" | "bridge").
+    """
+    if lenses is not None and len(lenses.vertices):
+        cx = frame.bounds.mean(0)[0]
+        v = lenses.vertices
+        sides = [v[v[:, 0] < cx], v[v[:, 0] >= cx]]
+        if all(len(s) for s in sides):
+            # centro de cada cristal = centro de su caja (no lo sesga la densidad de la malla)
+            y = float(np.mean([(s[:, 1].min() + s[:, 1].max()) / 2 for s in sides]))
+            return np.array([cx, y, frame.bounds[1, 2]]), "lens_line"
+    return bridge_point(frame, cfg), "bridge"
+
+
+def hinge_depth(frame, slice_ratio=0.018, side_ratio=0.85, max_depth_ratio=0.5):
+    """
+    Profundidad (z) de las bisagras: dónde termina el frente y empiezan las patillas.
+
+    Se recorre el marco de adelante hacia atrás en franjas finas (slice_ratio del ancho).
+    Mientras haya geometría cerca del centro es el frente (aro, cristales, puente). La
+    primera franja en la que solo queda geometría en los extremos laterales (más allá de
+    side_ratio del semiancho) es la bisagra: de ahí hacia atrás solo hay patillas.
+
+    Devuelve la z del inicio de esa franja, o None si no se encuentra (sin patillas, o
+    una forma inesperada): quien llama decide el respaldo.
+    """
+    v = frame.vertices
+    width = frame.extents[0]
+    if width <= 0 or not len(v):
+        return None
+    cx = frame.bounds.mean(0)[0]
+    half = width / 2
+    zfront = frame.bounds[1, 2]
+    step = slice_ratio * width
+    seen_front = False
+    z = zfront
+    while z > zfront - max_depth_ratio * width:
+        band = v[(v[:, 2] <= z) & (v[:, 2] > z - step)]
+        if len(band):
+            only_sides = np.abs(band[:, 0] - cx).min() > side_ratio * half
+            if only_sides and seen_front:
+                return float(z)
+            seen_front = seen_front or not only_sides
+        z -= step
+    return None
+
+
+def make_ar_variant(scene, cfg, stub_ratio=0.035):
+    """
+    Variante para el probador de RA: el mismo modelo sin patillas.
+
+    En la cara, las patillas quedan detrás de la cabeza y de las orejas; la app no tiene
+    un oclusor que las tape, así que se ven flotando. Se corta el marco justo detrás de
+    las bisagras (hinge_depth) dejando un muñón corto (stub_ratio del ancho, ~5 mm en
+    lentes de 14 cm) para que la bisagra no quede abierta. Los cristales no se tocan.
+
+    El corte se hace sobre el modelo ya normalizado: el origen, el tamaño y por lo tanto
+    el ar_fit son los mismos que los del modelo completo.
+
+    Si no se encuentra la bisagra, se usa crop_temples (corte a profundidad fija).
+    Devuelve (escena, stats) con stats["method"] = "hinge" | "crop_temples".
+    No modifica la escena original.
+    """
+    out = trimesh.Scene()
+    stats = {}
+    for name, geom in scene.geometry.items():
+        geom = geom.copy()
+        if name != "lenses":
+            before = len(geom.faces)
+            hinge = hinge_depth(geom)
+            if hinge is not None:
+                cut = hinge - stub_ratio * geom.extents[0]
+                geom = _submesh(geom, geom.triangles_center[:, 2] > cut)
+                stats.update(method="hinge", hinge_z_m=round(hinge, 4), cut_z_m=round(float(cut), 4))
+            else:
+                geom = crop_temples(geom, cfg)
+                stats["method"] = "crop_temples"
+            geom = remove_small_parts(geom, 0.02)    # restos sueltos de las patillas cortadas
+            stats.update(faces_removed=int(before - len(geom.faces)),
+                         depth_m=round(float(geom.extents[2]), 4))
+        out.add_geometry(geom, node_name=name, geom_name=name)
+    return out, stats
+
+
 def _boundary_loops(mesh):
     """Bordes abiertos de la malla (vértices soldados), ordenados como curvas cerradas."""
     inv = _welded_index(mesh)
@@ -1458,7 +1556,9 @@ def process_light(mesh, photo_rgba, opts, cat, photo_original, stats):
     if lenses is not None and not clear_frame:
         stats.update(tame_bright_spots(main))
 
-    anchor = bridge_point(main, opts.glasses) if cat.anchor == "bridge" else None
+    anchor = None
+    if cat.anchor == "bridge":
+        anchor, stats["anchor"] = lens_line_point(main, lenses, opts.glasses)
     normalize([main, lenses], cat, anchor)
     if clear_frame:
         mat = main.visual.material
@@ -1583,7 +1683,9 @@ def process_accessory(scene_or_mesh, photo_rgba=None, opts=PostprocessOptions(),
     stats["subdivided"] = subdivided
     apply_material(main, src_mat, cat, opts)
 
-    anchor = bridge_point(main, opts.glasses) if cat.anchor == "bridge" else None
+    anchor = None
+    if cat.anchor == "bridge":
+        anchor, stats["anchor"] = lens_line_point(main, lenses, opts.glasses)
     normalize([main, lenses], cat, anchor)
 
     # normales al final (después de escalar y rotar)

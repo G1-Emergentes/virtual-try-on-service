@@ -43,8 +43,11 @@ class Spar3dModelGenerator:
         except Exception as exc:
             raise GenerationFailed(f"No se pudo generar el modelo 3D: {exc}")
 
+        ar = dict(meta.get("ar_variant") or {})
+        ar_path = ar.pop("path", None)              # la ruta es interna; el resto va a details
         return GeneratedModel(file_path=Path(path), job_id=meta["job_id"], details=_summary(meta),
-                              thumbnail_png=_safe_thumbnail(cutout))
+                              thumbnail_png=_safe_thumbnail(cutout),
+                              ar_file_path=Path(ar_path) if ar_path else None, ar_details=ar)
 
 
 def _safe_thumbnail(cutout):
@@ -68,4 +71,5 @@ def _summary(meta: dict) -> dict:
         "lens_type": lens.get("preset"),
         "frame_material": meta.get("frame_material"),
         "size_m": meta.get("size_m"),
+        "anchor": meta.get("anchor"),               # lens_line | bridge (lentes)
     }

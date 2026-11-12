@@ -4,7 +4,8 @@ Adaptador del puerto ModelRepository sobre el disco.
 Cada prenda tiene su carpeta, con el mismo ID del Digital Closet:
 
     {OUTPUT_DIR}/garments/{garment_id}/
-        model.glb        el modelo 3D listo para la app
+        model.glb        el modelo 3D completo (visor 3D)
+        model_ar.glb     variante para RA, sin patillas (probador; solo lentes)
         thumbnail.png    miniatura para la tarjeta: la foto sin fondo (PNG transparente)
         photo.jpg|png    la foto usada para generarlo
         metadata.json    estado, versión de la foto, fechas y datos de la generación
@@ -20,10 +21,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from ...domain.garment_model import AccessoryCategory, GarmentId, GarmentModel, ModelStatus
+from ...domain.garment_model import AccessoryCategory, GarmentId, GarmentModel, ModelStatus, ModelVariant
 from ...domain.ports import GarmentPhoto
 
 MODEL_FILE = "model.glb"
+# Nombre del .glb de cada variante (lo comparten el disco y Supabase Storage).
+MODEL_FILES = {ModelVariant.FULL: MODEL_FILE, ModelVariant.AR: "model_ar.glb"}
 THUMBNAIL_FILE = "thumbnail.png"
 METADATA_FILE = "metadata.json"
 PHOTO_EXTENSIONS = {"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp"}
@@ -54,14 +57,16 @@ class FileModelRepository:
         extension = PHOTO_EXTENSIONS.get(photo.content_type, ".jpg")
         (folder / f"photo{extension}").write_bytes(photo.data)
 
-    def store_model_file(self, garment_id: GarmentId, generated_file: Path) -> None:
-        target = self._dir(garment_id, create=True) / MODEL_FILE
+    def store_model_file(self, garment_id: GarmentId, generated_file: Path,
+                         variant: ModelVariant = ModelVariant.FULL) -> None:
+        target = self._dir(garment_id, create=True) / MODEL_FILES[variant]
         tmp = target.with_suffix(".glb.tmp")
         shutil.copyfile(generated_file, tmp)
         os.replace(tmp, target)                 # reemplazo atómico: nunca queda a medias
 
-    def model_file(self, garment_id: GarmentId) -> Optional[Path]:
-        path = self._dir(garment_id) / MODEL_FILE
+    def model_file(self, garment_id: GarmentId,
+                   variant: ModelVariant = ModelVariant.FULL) -> Optional[Path]:
+        path = self._dir(garment_id) / MODEL_FILES[variant]
         return path if path.exists() else None
 
     def store_thumbnail(self, garment_id: GarmentId, png: bytes) -> None:

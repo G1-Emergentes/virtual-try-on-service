@@ -83,7 +83,8 @@ Todas las rutas llevan el prefijo **`/api/v1/try-on`** (variable `API_PREFIX`). 
 | Método | Ruta | Qué hace |
 |---|---|---|
 | POST | `/garments/{garment_id}/model` | Genera (o regenera) el modelo de la prenda y su miniatura. Responde `201` con su estado. |
-| GET | `/garments/{garment_id}/model` | Descarga el `.glb` (`model/gltf-binary`). Para la pantalla de detalle. |
+| GET | `/garments/{garment_id}/model` | Descarga el `.glb` completo (`model/gltf-binary`). Para el visor 3D. |
+| GET | `/garments/{garment_id}/model?variant=ar` | Variante sin patillas para el probador de RA (solo `AR_READY`). La cabecera `X-Model-Variant` dice qué se entregó. |
 | GET | `/garments/{garment_id}/model/info` | Estado: `status`, `badge`, `source_image_version`, `is_stale`, fechas, detalles. |
 | GET | `/garments/{garment_id}/model/thumbnail` | Miniatura: la foto sin fondo, PNG transparente de 512 px. Para las tarjetas. |
 | GET | `/garments/models?ids=a,b,c` | Estado, etiqueta y rutas de hasta 100 prendas en una llamada. Para la pantalla del armario. |
@@ -105,6 +106,22 @@ Hoy solo los **lentes** son `AR_READY`; las gorras quedan como `MODEL_3D`. Se ca
 
 Flujo sugerido en la app: el armario llama a `GET /garments/models?ids=...`, muestra la miniatura de cada prenda con su etiqueta y, al abrir el detalle, descarga el `.glb` para el visor 3D y la prueba en RA.
 
+### Variante para RA (sin patillas)
+
+Para lentes, cada generación crea dos `.glb` con el mismo origen y tamaño (y por lo tanto el mismo `ar_fit`):
+
+| Variante | Archivo | Uso |
+|---|---|---|
+| `full` | `model.glb` | Visor 3D: el modelo completo, con patillas. |
+| `ar` | `model_ar.glb` | Probador de RA: cortado justo detrás de las bisagras (~5 mm de muñón). En la cara las patillas quedan detrás de la cabeza y, sin un oclusor, se verían flotando. |
+
+- Las respuestas traen `ar_model_url` (`.../model?variant=ar`) cuando el modelo es `AR_READY` y tiene la variante; si no, `null`.
+- `details.ar_variant` describe el corte: `method` = `hinge` (bisagra detectada por `hinge_depth`) o `crop_temples` (respaldo: corte a profundidad fija cuando no se encuentra la bisagra), más `hinge_z_m`, `cut_z_m` y `depth_m`.
+- Modelos generados antes de la variante: `GET /model?variant=ar` entrega el completo con `X-Model-Variant: full`. Regenerarlos crea la variante.
+
+### Contrato del `.glb` de lentes
+
+Metros, Y arriba, frente hacia +Z, 14 cm de ancho. Origen en el centro del puente **a la altura del centro de los cristales** (promedio de los dos), en el plano frontal (`details.anchor` = `lens_line`; `bridge` si no se detectaron los cristales). La app lo lleva al landmark 6 de MediaPipe (puente nasal) y suma `ar_fit.offset_m`; por defecto `[0, 0.0015, 0.002]` deja los cristales a la altura de los ojos y el frente ~12 mm delante de la córnea.
 ### Colocación en la cara (`ar_fit`)
 
 Las respuestas de `POST /model`, `GET /model/info`, `PUT /model/ar-fit` y cada fila de
@@ -112,10 +129,10 @@ Las respuestas de `POST /model`, `GET /model/info`, `PUT /model/ar-fit` y cada f
 aplica sobre el contrato del `.glb` (metros, origen en el anclaje):
 
 ```json
-"ar_fit": {"anchor": "nose_bridge", "offset_m": [0.0, 0.003, 0.006], "scale": 1.0, "pitch_deg": 0.0, "source": "default"}
+"ar_fit": {"anchor": "nose_bridge", "offset_m": [0.0, 0.0015, 0.002], "scale": 1.0, "pitch_deg": 0.0, "source": "default"}
 ```
 
-- `anchor`: punto de la cara. Lentes → `nose_bridge` (landmark 168 de MediaPipe). Lo fija la categoría.
+- `anchor`: punto de la cara. Lentes → `nose_bridge` (landmark 6 de MediaPipe, puente nasal). Lo fija la categoría.
 - `offset_m`: desplazamiento en metros en los ejes de la cara (x derecha, y arriba, z hacia fuera).
 - `scale`: factor sobre el tamaño real. `pitch_deg`: inclinación sobre el eje x.
 - `source`: `default` (valor de la categoría, variable `AR_FIT_GLASSES`) o `calibrated`.
@@ -184,7 +201,7 @@ Variables principales (`.env`):
 | `RECON_MODEL` | `spar3d` (por defecto) o `sf3d` |
 | `SPAR3D_LOW_VRAM` | `1` (necesario con 8 GB) |
 | `AR_CATEGORIES` | Categorías con etiqueta `AR_READY`. Por defecto `glasses`. |
-| `AR_FIT_GLASSES` | Ajuste en la cara por defecto de los lentes (JSON). Vacía = `{"offset_m": [0, 0.003, 0.006], "scale": 1, "pitch_deg": 0}`. Un valor fuera de límites impide arrancar. |
+| `AR_FIT_GLASSES` | Ajuste en la cara por defecto de los lentes (JSON). Vacía = `{"offset_m": [0, 0.0015, 0.002], "scale": 1, "pitch_deg": 0}`. Un valor fuera de límites impide arrancar. |
 | `API_PREFIX` | Prefijo de las rutas. Por defecto `/api/v1/try-on`. |
 | `DIAGNOSTICS_KEY` | Clave para `/health/details`. Vacía = desactivado. |
 | `EXPOSE_DOCS` | `true` (por defecto) muestra Swagger; `false` en producción. |

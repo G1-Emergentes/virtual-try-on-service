@@ -26,7 +26,7 @@ class Settings:
     # Mostrar Swagger (/docs, /redoc, /openapi.json). En producción: false.
     expose_docs: bool = True
     # Ajuste en la cara por defecto de cada categoría con RA (sin calibrar), p. ej.
-    # {"glasses": {"offset_m": [0, 0.003, 0.006], "scale": 1.0, "pitch_deg": 0}}.
+    # {"glasses": {"offset_m": [0, 0.0015, 0.002], "scale": 1.0, "pitch_deg": 0}}.
     # Vacío = valores del dominio. Se valida al arrancar.
     ar_fits: dict = field(default_factory=dict)
     storage_url: str = ""
@@ -60,7 +60,7 @@ class Settings:
 
 
 def _ar_fits_from_env() -> dict:
-    """AR_FIT_GLASSES='{"offset_m": [0, 0.003, 0.006], "scale": 1.0, "pitch_deg": 0}'."""
+    """AR_FIT_GLASSES='{"offset_m": [0, 0.0015, 0.002], "scale": 1.0, "pitch_deg": 0}'."""
     fits = {}
     for category in ("glasses",):
         raw = os.getenv(f"AR_FIT_{category.upper()}", "").strip()

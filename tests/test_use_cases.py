@@ -4,7 +4,7 @@ from tryon.application.generate_garment_model import GenerateGarmentModel, Gener
 from tryon.application.get_garment_model import GetGarmentModel
 from tryon.domain.errors import (GarmentNotFound, GenerationFailed, ModelNotFound, ModelNotReady,
                                  UnsupportedAccessory)
-from tryon.domain.garment_model import AccessoryCategory, ModelStatus
+from tryon.domain.garment_model import AccessoryCategory, ModelStatus, ModelVariant
 from tryon.domain.ports import Credentials
 
 from .fakes import GLASSES_ID, FakeCatalog, FakeGenerator, InMemoryRepository
@@ -80,3 +80,60 @@ def test_consulta_en_lote(catalog, tmp_path):
     assert rows[0].badge.value == "AR_READY" and rows[0].has_thumbnail
     assert rows[1].found and rows[1].model is None and rows[1].badge is None
     assert not rows[2].found
+
+
+# --- Variante para RA (sin patillas) ----------------------------------------------------
+
+def test_guarda_la_variante_ar_y_anota_como_se_corto(catalog, tmp_path):
+    repo = InMemoryRepository()
+    model = GenerateGarmentModel(catalog, repo, FakeGenerator(tmp_path, ar_method="hinge")).execute(
+        GenerateGarmentModelCommand(GLASSES_ID, CREDS))
+    assert GLASSES_ID in repo.files and GLASSES_ID in repo.ar_files
+    assert model.details["ar_variant"] == {"method": "hinge", "depth_m": 0.02}
+    assert model.details["seconds"] == 1.0                    # los datos del motor se conservan
+
+
+def test_registra_el_respaldo_crop_temples(catalog, tmp_path):
+    repo = InMemoryRepository()
+    model = GenerateGarmentModel(catalog, repo, FakeGenerator(tmp_path, ar_method="crop_temples")).execute(
+        GenerateGarmentModelCommand(GLASSES_ID, CREDS))
+    assert model.details["ar_variant"]["method"] == "crop_temples"
+
+
+def test_descarga_por_variante(catalog, tmp_path):
+    repo = InMemoryRepository()
+    GenerateGarmentModel(catalog, repo, FakeGenerator(tmp_path, ar_method="hinge")).execute(
+        GenerateGarmentModelCommand(GLASSES_ID, CREDS))
+    getter = GetGarmentModel(catalog, repo)
+    full = getter.file(GLASSES_ID, CREDS)
+    assert full.variant is ModelVariant.FULL and full.file_path.name == "job.glb"
+    ar = getter.file(GLASSES_ID, CREDS, ModelVariant.AR)
+    assert ar.variant is ModelVariant.AR and ar.file_path.name == "job_ar.glb"
+    assert ar.has_ar_variant
+
+
+def test_modelo_antiguo_sin_variante_ar_entrega_el_completo(catalog, tmp_path):
+    repo = InMemoryRepository()
+    GenerateGarmentModel(catalog, repo, FakeGenerator(tmp_path)).execute(
+        GenerateGarmentModelCommand(GLASSES_ID, CREDS))
+    view = GetGarmentModel(catalog, repo).file(GLASSES_ID, CREDS, ModelVariant.AR)
+    assert view.variant is ModelVariant.FULL and view.file_path.name == "job.glb"
+    assert not view.has_ar_variant
+
+
+def test_archivo_ar_perdido_entrega_el_completo(catalog, tmp_path):
+    repo = InMemoryRepository()
+    GenerateGarmentModel(catalog, repo, FakeGenerator(tmp_path, ar_method="hinge")).execute(
+        GenerateGarmentModelCommand(GLASSES_ID, CREDS))
+    repo.ar_files.clear()
+    assert GetGarmentModel(catalog, repo).file(GLASSES_ID, CREDS, ModelVariant.AR).variant is ModelVariant.FULL
+
+
+def test_variante_ar_solo_para_modelos_ar_ready(catalog, tmp_path):
+    repo = InMemoryRepository()
+    GenerateGarmentModel(catalog, repo, FakeGenerator(tmp_path, ar_method="hinge")).execute(
+        GenerateGarmentModelCommand(BAG_ID, CREDS, category=AccessoryCategory.HAT))   # gorra: MODEL_3D
+    getter = GetGarmentModel(catalog, repo)
+    assert getter.file(BAG_ID, CREDS).variant is ModelVariant.FULL
+    with pytest.raises(UnsupportedAccessory):
+        getter.file(BAG_ID, CREDS, ModelVariant.AR)
