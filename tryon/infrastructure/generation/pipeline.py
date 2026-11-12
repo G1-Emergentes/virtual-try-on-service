@@ -7,6 +7,7 @@ material_presets.py) en una sola clase. La usan:
 - el adaptador Spar3dModelGenerator (puerto ModelGenerator del dominio).
 
 Pasos: recorte opcional -> quitar fondo -> reconstrucción (GPU) -> posprocesado -> .glb.
+Para lentes se exporta además la variante para RA (sin patillas): meta["ar_variant"].
 """
 import os
 import threading
@@ -20,7 +21,7 @@ import torch
 import trimesh
 from PIL import Image
 
-from postprocess import GlassesConfig, PostprocessOptions, export_glb, process_accessory
+from postprocess import GlassesConfig, PostprocessOptions, export_glb, make_ar_variant, process_accessory
 from recon import Reconstructor
 
 
@@ -70,7 +71,13 @@ class AccessoryModelPipeline:
         return path, meta
 
     def run_with_cutout(self, image: Image.Image, params: PipelineParams) -> tuple[str, dict, Image.Image]:
-        """Igual que run(), y además devuelve la foto sin fondo (RGBA) para la miniatura."""
+        """
+        Igual que run(), y además devuelve la foto sin fondo (RGBA) para la miniatura.
+
+        Para lentes, meta["ar_variant"] trae la variante para el probador de RA:
+        {"path": .glb sin patillas, "method": "hinge" | "crop_temples", ...}.
+        Si no se pudo crear, no aparece (el probador usa el modelo completo).
+        """
         image, cropped = crop_to_box(image, params.box_2d)
         original = image.convert("RGB")
         cutout = self._recon.cutout(image)
@@ -109,7 +116,21 @@ class AccessoryModelPipeline:
         export_glb(scene, path, unlit=params.unlit, specular=specular)
         meta["cropped_to_box"] = cropped
         meta.update(stats)
+        if params.category == "glasses":
+            meta.update(self._export_ar_variant(scene, opts, job_id, params.unlit, specular))
         return path, meta, cutout
+
+    def _export_ar_variant(self, scene, opts: PostprocessOptions, job_id: str,
+                           unlit: bool, specular) -> dict:
+        """La variante para RA es un extra: si falla, el modelo completo se entrega igual."""
+        try:
+            ar_scene, ar_stats = make_ar_variant(scene, opts.glasses)
+            ar_path = os.path.join(self.output_dir, f"{job_id}_ar.glb")
+            export_glb(ar_scene, ar_path, unlit=unlit, specular=specular)
+        except Exception as exc:
+            print(f"[mirage-ai-3d] variante para RA omitida: {exc}")
+            return {}
+        return {"ar_variant": {"path": ar_path, **ar_stats}}
 
     def _reconstruct(self, image, texture_resolution: int, remesh: str):
         with self._gpu_lock:

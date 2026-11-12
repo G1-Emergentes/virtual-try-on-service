@@ -2,7 +2,8 @@
 API de modelos 3D por prenda: el modelo queda asociado al ID de la prenda del Digital Closet.
 
     POST /garments/{garment_id}/model             genera (o regenera) el modelo 3D
-    GET  /garments/{garment_id}/model             descarga el .glb (pantalla de detalle)
+    GET  /garments/{garment_id}/model             descarga el .glb completo (visor 3D)
+    GET  /garments/{garment_id}/model?variant=ar  descarga la variante sin patillas (probador RA)
     GET  /garments/{garment_id}/model/info        estado, etiqueta y datos del modelo
     GET  /garments/{garment_id}/model/thumbnail   miniatura: foto sin fondo (tarjeta)
     GET  /garments/models?ids=a,b,c               estado y etiqueta de varias prendas (armario)
@@ -13,6 +14,10 @@ devuelven (model_url, thumbnail_url) usan PUBLIC_BASE_PATH: la ruta que ve la ap
 
 Etiquetas (badge): AR_READY = se puede probar en la cara; MODEL_3D = solo ver en 3D;
 null = sin modelo listo. Hoy solo los lentes son AR_READY (variable AR_CATEGORIES).
+
+Variantes: los lentes AR_READY traen `ar_model_url` (sin patillas, para el probador). Es
+null en modelos anteriores a la variante: al descargar con variant=ar se entrega el
+completo y la cabecera X-Model-Variant dice "full" (regenerar para obtener la variante).
 
 Autenticación: Authorization: Bearer <token de IAM>. En Swagger se pone una sola vez con el
 botón "Authorize" (candado) y queda guardado. Este servicio no valida el token: lo reenvía al
@@ -31,7 +36,7 @@ from pydantic import BaseModel, Field
 from ...application.generate_garment_model import GenerateGarmentModelCommand
 from ...application.get_garment_model import GarmentModelSummary, GarmentModelView
 from ...bootstrap import Container
-from ...domain.garment_model import AccessoryCategory, ArFit, GarmentModel, ModelBadge
+from ...domain.garment_model import AccessoryCategory, ArFit, GarmentModel, ModelBadge, ModelVariant
 from ...domain.ports import Credentials, GenerationOptions, PhotoUpload
 
 router = APIRouter(prefix="/garments", tags=["Garment Models"])
@@ -66,6 +71,7 @@ class GarmentModelResponse(BaseModel):
     source_image_version: Optional[int]  # versión de la foto usada
     is_stale: bool                       # la prenda cambió de foto: conviene regenerar
     model_url: Optional[str]             # ruta para descargar el .glb (si está READY)
+    ar_model_url: Optional[str] = None   # variante sin patillas para el probador (AR_READY nuevos)
     thumbnail_url: Optional[str]         # ruta de la miniatura (si existe)
     ar_fit: Optional[ArFitResponse]      # colocación en la cara (solo AR_READY)
     job_id: Optional[str]
@@ -85,6 +91,7 @@ class GarmentModelItem(BaseModel):
     badge: Optional[str]                 # AR_READY | MODEL_3D | null
     is_stale: bool
     model_url: Optional[str]
+    ar_model_url: Optional[str] = None
     thumbnail_url: Optional[str]
     ar_fit: Optional[ArFitResponse] = None
 
@@ -99,8 +106,9 @@ class Links:
     def __init__(self, base_path: str):
         self._base = base_path
 
-    def model(self, garment_id: str) -> str:
-        return f"{self._base}/garments/{garment_id}/model"
+    def model(self, garment_id: str, variant: ModelVariant = ModelVariant.FULL) -> str:
+        url = f"{self._base}/garments/{garment_id}/model"
+        return url if variant is ModelVariant.FULL else f"{url}?variant={variant.value}"
 
     def thumbnail(self, garment_id: str) -> str:
         return f"{self._base}/garments/{garment_id}/model/thumbnail"
@@ -115,7 +123,8 @@ def _ar_fit(fit: Optional[ArFit]) -> Optional[ArFitResponse]:
 
 
 def _response(links: Links, model: GarmentModel, badge: Optional[ModelBadge], is_stale: bool = False,
-              has_thumbnail: bool = False, ar_fit: Optional[ArFit] = None) -> GarmentModelResponse:
+              has_thumbnail: bool = False, ar_fit: Optional[ArFit] = None,
+              has_ar_variant: bool = False) -> GarmentModelResponse:
     gid = model.garment_id.value
     return GarmentModelResponse(
         garment_id=gid,
@@ -125,6 +134,7 @@ def _response(links: Links, model: GarmentModel, badge: Optional[ModelBadge], is
         source_image_version=model.source_image_version,
         is_stale=is_stale,
         model_url=links.model(gid) if model.is_ready else None,
+        ar_model_url=links.model(gid, ModelVariant.AR) if has_ar_variant else None,
         thumbnail_url=links.thumbnail(gid) if has_thumbnail else None,
         ar_fit=_ar_fit(ar_fit),
         job_id=model.job_id,
@@ -145,6 +155,7 @@ def _item(links: Links, summary: GarmentModelSummary) -> GarmentModelItem:
         badge=_badge(summary.badge),
         is_stale=summary.is_stale,
         model_url=links.model(summary.garment_id) if model and model.is_ready else None,
+        ar_model_url=links.model(summary.garment_id, ModelVariant.AR) if summary.has_ar_variant else None,
         thumbnail_url=links.thumbnail(summary.garment_id) if summary.has_thumbnail else None,
         ar_fit=_ar_fit(summary.ar_fit),
     )
@@ -162,7 +173,7 @@ def _links(request: Request) -> Links:
 
 def _view_response(request: Request, view: GarmentModelView) -> GarmentModelResponse:
     return _response(_links(request), view.model, view.badge, view.is_stale, view.has_thumbnail,
-                     view.ar_fit)
+                     view.ar_fit, view.has_ar_variant)
 
 
 # Esquema de seguridad de OpenAPI: hace aparecer el candado "Authorize" en Swagger.
@@ -238,14 +249,21 @@ async def generate_garment_model(
 async def download_garment_model(
     request: Request,
     garment_id: str,
+    variant: ModelVariant = Query(
+        ModelVariant.FULL,
+        description="full = modelo completo (visor 3D). ar = sin patillas (probador de RA; solo "
+                    "AR_READY). Si el modelo no tiene variante ar se entrega el completo: mira la "
+                    "cabecera X-Model-Variant."),
     creds: Credentials = Depends(credentials),
 ):
     view: GarmentModelView = await run_in_threadpool(
-        _container(request).get_garment_model.file, garment_id, creds)
+        _container(request).get_garment_model.file, garment_id, creds, variant)
     model = view.model
-    filename = f"{model.garment_id.value}.glb"
+    suffix = "" if view.variant is ModelVariant.FULL else f"_{view.variant.value}"
+    filename = f"{model.garment_id.value}{suffix}.glb"
     headers = {
         "X-Garment-Id": model.garment_id.value,
+        "X-Model-Variant": view.variant.value,
         "X-Model-Status": model.status.value,
         "X-Source-Image-Version": str(model.source_image_version or ""),
         "X-Model-Stale": "yes" if view.is_stale else "no",

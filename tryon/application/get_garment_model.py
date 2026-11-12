@@ -3,13 +3,17 @@ Casos de uso de consulta del modelo 3D de una prenda.
 
 Antes de responder se pregunta al catálogo por la prenda: así solo su dueño puede ver o
 descargar el modelo, y se sabe si la foto cambió desde que se generó (is_stale).
+
+Variantes del .glb (ModelVariant): FULL para el visor 3D y AR (sin patillas) para el
+probador. Pedir AR exige un modelo AR_READY; si el modelo es anterior a la variante AR,
+se entrega el completo y la vista lo indica (variant=FULL) para que se pueda regenerar.
 """
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Optional
 
-from ..domain.errors import InvalidGarmentId, ModelNotFound, ModelNotReady
-from ..domain.garment_model import ArFit, ArSupportPolicy, GarmentId, GarmentModel, ModelBadge
+from ..domain.errors import InvalidGarmentId, ModelNotFound, ModelNotReady, UnsupportedAccessory
+from ..domain.garment_model import ArFit, ArSupportPolicy, GarmentId, GarmentModel, ModelBadge, ModelVariant
 from ..domain.ports import Credentials, GarmentCatalog, ModelRepository
 
 MAX_BATCH = 100
@@ -24,6 +28,12 @@ class GarmentModelView:
     thumbnail_path: Path | bytes | None = None
     has_thumbnail: bool = False
     ar_fit: Optional[ArFit] = None           # cómo se coloca en la cara (solo AR_READY)
+    variant: Optional[ModelVariant] = None   # variante entregada en file_path
+
+    @property
+    def has_ar_variant(self) -> bool:
+        """El probador puede pedir la variante sin patillas de este modelo."""
+        return self.badge is ModelBadge.AR_READY and self.model.has_variant(ModelVariant.AR)
 
 
 @dataclass(frozen=True)
@@ -37,6 +47,11 @@ class GarmentModelSummary:
     badge: Optional[ModelBadge]
     has_thumbnail: bool
     ar_fit: Optional[ArFit] = None
+
+    @property
+    def has_ar_variant(self) -> bool:
+        return (self.badge is ModelBadge.AR_READY and self.model is not None
+                and self.model.has_variant(ModelVariant.AR))
 
 
 class GetGarmentModel:
@@ -62,16 +77,32 @@ class GetGarmentModel:
             ar_fit=self._ar_policy.fit_for(model),
         )
 
-    def file(self, garment_id: str, credentials: Credentials) -> GarmentModelView:
-        """El .glb listo para descargar."""
+    def file(self, garment_id: str, credentials: Credentials,
+             variant: ModelVariant = ModelVariant.FULL) -> GarmentModelView:
+        """
+        El .glb listo para descargar, en la variante pedida.
+
+        AR solo para modelos AR_READY (UnsupportedAccessory si no). Un modelo AR_READY sin
+        variante AR (generado antes de que existiera) devuelve el completo con variant=FULL.
+        """
         view = self.info(garment_id, credentials)
-        asset = self._repository.model_file(view.model.garment_id) if view.model.is_ready else None
+        served = variant
+        if variant is ModelVariant.AR:
+            if view.model.is_ready and view.badge is not ModelBadge.AR_READY:
+                raise UnsupportedAccessory("Este modelo no se puede probar en realidad aumentada.")
+            if not view.model.has_variant(ModelVariant.AR):
+                served = ModelVariant.FULL
+        asset = (self._repository.model_file(view.model.garment_id, served)
+                 if view.model.is_ready else None)
+        if asset is None and served is ModelVariant.AR:      # archivo AR perdido: el completo
+            served = ModelVariant.FULL
+            asset = self._repository.model_file(view.model.garment_id, served)
         if asset is None:
             raise ModelNotReady(
                 "El modelo 3D aún no está listo." if view.model.status.value == "PROCESSING"
                 else f"La última generación falló: {view.model.error}",
                 status=view.model.status.value)
-        return replace(view, file_path=asset)
+        return replace(view, file_path=asset, variant=served)
 
     def thumbnail(self, garment_id: str, credentials: Credentials) -> GarmentModelView:
         """La miniatura (foto sin fondo) para la tarjeta de la prenda."""

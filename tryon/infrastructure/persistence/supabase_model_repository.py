@@ -4,15 +4,21 @@ from pathlib import Path
 import httpx
 
 from ...domain.errors import ModelStorageUnavailable
-from ...domain.garment_model import GarmentId, GarmentModel
+from ...domain.garment_model import GarmentId, GarmentModel, ModelVariant
 from ...domain.ports import GarmentPhoto
-from .file_model_repository import METADATA_FILE, MODEL_FILE, THUMBNAIL_FILE, _from_dict, _to_dict
+from .file_model_repository import METADATA_FILE, MODEL_FILES, THUMBNAIL_FILE, _from_dict, _to_dict
 
 BUCKET = "accessory-models"
 
 
 class SupabaseModelRepository:
-    """Private Storage objects; the API checks garment ownership before reading them."""
+    """
+    Adaptador del puerto ModelRepository sobre Supabase Storage (bucket privado).
+
+    Mismos archivos por prenda que en disco: accessory-models/{garment_id}/model.glb,
+    model_ar.glb (variante RA), thumbnail.png, metadata.json y source-photo.
+    La API comprueba que la prenda es del usuario antes de leer cualquier archivo.
+    """
 
     def __init__(self, url: str, key: str):
         self._url = f"{url}/storage/v1/object"
@@ -70,11 +76,13 @@ class SupabaseModelRepository:
     def store_photo(self, garment_id: GarmentId, photo: GarmentPhoto) -> None:
         self._write(garment_id, "source-photo", photo.data, photo.content_type)
 
-    def store_model_file(self, garment_id: GarmentId, generated_file: Path) -> None:
-        self._write(garment_id, MODEL_FILE, generated_file.read_bytes(), "model/gltf-binary")
+    def store_model_file(self, garment_id: GarmentId, generated_file: Path,
+                         variant: ModelVariant = ModelVariant.FULL) -> None:
+        self._write(garment_id, MODEL_FILES[variant], generated_file.read_bytes(), "model/gltf-binary")
 
-    def model_file(self, garment_id: GarmentId) -> bytes | None:
-        return self._read(garment_id, MODEL_FILE)
+    def model_file(self, garment_id: GarmentId,
+                   variant: ModelVariant = ModelVariant.FULL) -> bytes | None:
+        return self._read(garment_id, MODEL_FILES[variant])
 
     def store_thumbnail(self, garment_id: GarmentId, png: bytes) -> None:
         self._write(garment_id, THUMBNAIL_FILE, png, "image/png")

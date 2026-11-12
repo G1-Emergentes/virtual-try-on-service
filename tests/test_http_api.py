@@ -63,9 +63,9 @@ def fake_digital_closet(request: httpx.Request) -> httpx.Response:
     return httpx.Response(500)
 
 
-def make_client(tmp_path, catalog) -> TestClient:
+def make_client(tmp_path, catalog, ar_method=None) -> TestClient:
     repo = FileModelRepository(str(tmp_path / "out"))
-    generator = FakeGenerator(tmp_path)
+    generator = FakeGenerator(tmp_path, ar_method=ar_method)
     app = FastAPI()
     register_error_handlers(app)
     app.include_router(router, prefix=P)
@@ -221,7 +221,7 @@ def test_diagnostico_oculto_sin_clave(tmp_path):
 def test_lentes_traen_ar_fit_por_defecto(client):
     r = client.post(f"{P}/garments/{GLASSES_ID}/model", headers=AUTH)
     fit = r.json()["ar_fit"]
-    assert fit == {"anchor": "nose_bridge", "offset_m": [0.0, 0.003, 0.006], "scale": 1.0,
+    assert fit == {"anchor": "nose_bridge", "offset_m": [0.0, 0.0015, 0.002], "scale": 1.0,
                    "pitch_deg": 0.0, "source": "default"}
     items = client.get(f"{P}/garments/models?ids={GLASSES_ID},{TOP_ID}", headers=AUTH).json()["items"]
     assert items[0]["ar_fit"] == fit
@@ -277,3 +277,39 @@ def test_calibrar_ar_fit_valida_forma_dueno_y_modelo(client):
     assert r.status_code == 404 and r.json()["error"]["code"] == "GARMENT_NOT_FOUND"
     r = client.put(f"{P}/garments/{GLASSES_ID}/model/ar-fit", json={"offset_m": [0, 0, 0]})
     assert r.status_code == 401
+
+
+# --- Variante para RA (sin patillas) ----------------------------------------------------
+
+def test_variante_ar_se_guarda_se_anuncia_y_se_descarga(tmp_path):
+    c = make_client(tmp_path, DigitalClosetCatalog(DC, transport=httpx.MockTransport(fake_digital_closet)),
+                    ar_method="hinge")
+    body = c.post(f"{P}/garments/{GLASSES_ID}/model", headers=AUTH).json()
+    assert body["ar_model_url"] == f"{P}/garments/{GLASSES_ID}/model?variant=ar"
+    assert body["details"]["ar_variant"]["method"] == "hinge"
+    folder = tmp_path / "out" / "garments" / GLASSES_ID
+    assert (folder / "model_ar.glb").read_bytes() == b"glTF-fake-ar"
+
+    items = c.get(f"{P}/garments/models?ids={GLASSES_ID}", headers=AUTH).json()["items"]
+    assert items[0]["ar_model_url"] == body["ar_model_url"]
+
+    r = c.get(f"{P}/garments/{GLASSES_ID}/model?variant=ar", headers=AUTH)
+    assert r.status_code == 200 and r.content == b"glTF-fake-ar"
+    assert r.headers["x-model-variant"] == "ar"
+    assert f'{GLASSES_ID}_ar.glb' in r.headers["content-disposition"]
+
+    r = c.get(f"{P}/garments/{GLASSES_ID}/model", headers=AUTH)        # el visor: completo
+    assert r.content == b"glTF-fake" and r.headers["x-model-variant"] == "full"
+
+
+def test_modelo_sin_variante_ar_entrega_el_completo_y_lo_avisa(client):
+    body = client.post(f"{P}/garments/{GLASSES_ID}/model", headers=AUTH).json()
+    assert body["ar_model_url"] is None
+    r = client.get(f"{P}/garments/{GLASSES_ID}/model?variant=ar", headers=AUTH)
+    assert r.status_code == 200 and r.content == b"glTF-fake"
+    assert r.headers["x-model-variant"] == "full"
+
+
+def test_variante_desconocida(client):
+    client.post(f"{P}/garments/{GLASSES_ID}/model", headers=AUTH)
+    assert client.get(f"{P}/garments/{GLASSES_ID}/model?variant=xyz", headers=AUTH).status_code == 422

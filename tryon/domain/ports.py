@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional, Protocol
 
-from .garment_model import AccessoryCategory, GarmentId, GarmentModel
+from .garment_model import AccessoryCategory, GarmentId, GarmentModel, ModelVariant
 
 
 # --- Objetos que cruzan los puertos ------------------------------------------------------
@@ -60,6 +60,10 @@ class GeneratedModel:
     job_id: str
     details: dict = field(default_factory=dict)
     thumbnail_png: Optional[bytes] = None   # miniatura: la foto sin fondo, PNG transparente
+    # Variante para RA (sin patillas), solo en lentes. ar_details describe cómo se creó
+    # (p. ej. {"method": "hinge"} o {"method": "crop_temples"} si se usó el respaldo).
+    ar_file_path: Optional[Path] = None
+    ar_details: dict = field(default_factory=dict)
 
 
 # --- Puertos -----------------------------------------------------------------------------
@@ -106,10 +110,14 @@ class ModelRepository(Protocol):
         """Guarda la foto usada, para trazabilidad (de qué imagen salió el modelo)."""
         ...
 
-    def store_model_file(self, garment_id: GarmentId, generated_file: Path) -> None:
+    def store_model_file(self, garment_id: GarmentId, generated_file: Path,
+                         variant: ModelVariant = ModelVariant.FULL) -> None:
+        """Guarda el .glb de esa variante (reemplaza el anterior)."""
         ...
 
-    def model_file(self, garment_id: GarmentId) -> Path | bytes | None:
+    def model_file(self, garment_id: GarmentId,
+                   variant: ModelVariant = ModelVariant.FULL) -> Path | bytes | None:
+        """El .glb de esa variante, o None si no existe."""
         ...
 
     def store_thumbnail(self, garment_id: GarmentId, png: bytes) -> None:

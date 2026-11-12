@@ -3,7 +3,7 @@ from pathlib import Path
 from typing import Optional
 
 from tryon.domain.errors import GarmentNotFound, GarmentWithoutPhoto, GenerationFailed
-from tryon.domain.garment_model import AccessoryCategory, GarmentId, GarmentModel
+from tryon.domain.garment_model import AccessoryCategory, GarmentId, GarmentModel, ModelVariant
 from tryon.domain.ports import (Credentials, GarmentPhoto, GarmentSnapshot, GeneratedModel,
                                 GenerationOptions, PhotoUpload)
 
@@ -41,7 +41,8 @@ class FakeCatalog:
 class InMemoryRepository:
     def __init__(self):
         self.models: dict[str, GarmentModel] = {}
-        self.files: dict[str, Path] = {}
+        self.files: dict[str, Path] = {}            # variante completa
+        self.ar_files: dict[str, Path] = {}         # variante para RA
         self.thumbnails: dict[str, bytes] = {}
         self.photos: dict[str, GarmentPhoto] = {}
         self.history: list[str] = []          # estados guardados, en orden
@@ -56,11 +57,14 @@ class InMemoryRepository:
     def store_photo(self, garment_id, photo):
         self.photos[garment_id.value] = photo
 
-    def store_model_file(self, garment_id, generated_file):
-        self.files[garment_id.value] = generated_file
+    def _files(self, variant):
+        return self.ar_files if variant is ModelVariant.AR else self.files
 
-    def model_file(self, garment_id):
-        return self.files.get(garment_id.value)
+    def store_model_file(self, garment_id, generated_file, variant=ModelVariant.FULL):
+        self._files(variant)[garment_id.value] = generated_file
+
+    def model_file(self, garment_id, variant=ModelVariant.FULL):
+        return self._files(variant).get(garment_id.value)
 
     def store_thumbnail(self, garment_id, png):
         self.thumbnails[garment_id.value] = png
@@ -73,9 +77,15 @@ class InMemoryRepository:
 
 
 class FakeGenerator:
-    def __init__(self, tmp_dir: Path, fail: bool = False):
+    """
+    ar_method: None = el motor no entrega variante para RA (como antes de existir);
+    "hinge" o "crop_temples" = la entrega para lentes, con ese método de corte.
+    """
+
+    def __init__(self, tmp_dir: Path, fail: bool = False, ar_method: Optional[str] = None):
         self.tmp_dir = tmp_dir
         self.fail = fail
+        self.ar_method = ar_method
         self.calls: list[tuple[AccessoryCategory, GenerationOptions]] = []
 
     def generate(self, photo, category, options):
@@ -84,5 +94,10 @@ class FakeGenerator:
             raise GenerationFailed("falló la GPU")
         path = self.tmp_dir / "job.glb"
         path.write_bytes(b"glTF-fake")
+        ar_path, ar_details = None, {}
+        if self.ar_method and category is AccessoryCategory.GLASSES:
+            ar_path = self.tmp_dir / "job_ar.glb"
+            ar_path.write_bytes(b"glTF-fake-ar")
+            ar_details = {"method": self.ar_method, "depth_m": 0.02}
         return GeneratedModel(file_path=path, job_id="job123", details={"seconds": 1.0},
-                              thumbnail_png=b"\x89PNG-fake")
+                              thumbnail_png=b"\x89PNG-fake", ar_file_path=ar_path, ar_details=ar_details)

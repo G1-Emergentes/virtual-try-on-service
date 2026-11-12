@@ -2,7 +2,7 @@ import pytest
 
 from tryon.domain.errors import InvalidArFit, InvalidGarmentId, UnsupportedAccessory
 from tryon.domain.garment_model import (AccessoryCategory, ArFit, ArFitSource, ArSupportPolicy,
-                                       GarmentId, GarmentModel, ModelBadge, ModelStatus)
+                                       GarmentId, GarmentModel, ModelBadge, ModelStatus, ModelVariant)
 
 ID = "3f2a9c1e-5b7d-4e8a-9c21-7d4e5f6a8b90"
 
@@ -65,7 +65,7 @@ def test_ar_fit_por_defecto_solo_en_modelos_ar_ready():
     assert policy.fit_for(_ready(AccessoryCategory.HAT)) is None
     fit = policy.fit_for(_ready())
     assert fit.anchor == "nose_bridge" and fit.source is ArFitSource.DEFAULT
-    assert fit.offset_m == (0.0, 0.003, 0.006)
+    assert fit.offset_m == (0.0, 0.0015, 0.002)       # landmark 6 -> línea de los ojos
 
 
 def test_ar_fit_por_defecto_configurable_y_validado():
@@ -102,3 +102,15 @@ def test_no_se_calibra_lo_que_no_es_ra_ni_lo_que_no_esta_listo():
 def test_ar_fit_rechaza_valores_invalidos(data):
     with pytest.raises(InvalidArFit):
         ArFit.from_dict(data, "nose_bridge")
+
+
+# --- Variantes del .glb ------------------------------------------------------------------
+
+def test_variante_completa_en_todo_modelo_listo_y_ar_solo_si_se_genero():
+    procesando = GarmentModel.start(GarmentId(ID), AccessoryCategory.GLASSES, 1)
+    assert not procesando.has_variant(ModelVariant.FULL)
+    antiguo = _ready()                                        # generado antes de la variante AR
+    assert antiguo.has_variant(ModelVariant.FULL) and not antiguo.has_variant(ModelVariant.AR)
+    nuevo = GarmentModel.start(GarmentId(ID), AccessoryCategory.GLASSES, 1)
+    nuevo.complete("j", {"ar_variant": {"method": "hinge"}})
+    assert nuevo.has_variant(ModelVariant.AR)
